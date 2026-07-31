@@ -14,11 +14,11 @@ use crate::components::palette::CommandPalette;
 use crate::components::panels::{
     extract_headings, BacklinksPane, OutlinePane, SearchPane, TabBar, TagPane,
 };
+use crate::components::theme_editor::ThemeEditor;
 use crate::components::topbar::TopBar;
 use crate::components::tree::{create_note_in, FileTree};
-use crate::state::{
-    use_app, AppState, LeftPanel, MainView, Palette, RightPanel, Theme, ToastKind,
-};
+use crate::state::{use_app, AppState, LeftPanel, MainView, Palette, RightPanel, ToastKind};
+use crate::theme;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -28,19 +28,26 @@ pub fn App() -> impl IntoView {
     // Pick the theme before anything renders, so there is no flash of the wrong
     // one. An explicit choice wins; otherwise follow the operating system, which
     // is what someone running a light desktop expects to see on first visit.
-    match local_storage_get("go-notes-theme").as_deref() {
-        Some("light") => state.theme.set(Theme::Light),
-        Some("dark") => state.theme.set(Theme::Dark),
-        _ if prefers_light() => state.theme.set(Theme::Light),
-        _ => {}
-    }
+    let saved = theme::load_saved();
+    state.theme_id.set(saved.theme_id);
+    state.custom_colors.set(saved.custom_colors);
+    state.custom_css.set(saved.custom_css);
 
     Effect::new(move |_| {
-        let theme = state.theme.get();
-        if let Some(root) = document_element() {
-            let _ = root.set_attribute("data-theme", theme.as_str());
+        let colors = theme::active_colors(&state);
+        theme::apply(&colors);
+
+        let id = state.theme_id.get();
+        theme::save_theme_id(id);
+        if id == theme::ThemeId::Custom {
+            theme::save_custom_colors(&colors);
         }
-        local_storage_set("go-notes-theme", theme.as_str());
+    });
+
+    Effect::new(move |_| {
+        let css = state.custom_css.get();
+        theme::apply_custom_css(&css);
+        theme::save_custom_css(&css);
     });
 
     // Find out who we are. A 401 here is the normal unauthenticated case, not an
@@ -344,6 +351,7 @@ fn Shell() -> impl IntoView {
             </Show>
 
             <CommandPalette />
+            <ThemeEditor />
             <ConflictDialog />
             <ToastHost />
         </div>
@@ -585,33 +593,4 @@ fn install_shortcuts(state: AppState) {
     // Deliberately leaked: the listener lives for the lifetime of the page, and
     // dropping the closure would leave JavaScript calling into freed memory.
     handler.forget();
-}
-
-// ---------------------------------------------------------------------------
-// Small DOM helpers
-// ---------------------------------------------------------------------------
-
-/// True when the operating system asks for a light colour scheme.
-fn prefers_light() -> bool {
-    web_sys::window()
-        .and_then(|window| window.match_media("(prefers-color-scheme: light)").ok().flatten())
-        .is_some_and(|query| query.matches())
-}
-
-fn document_element() -> Option<web_sys::Element> {
-    web_sys::window()?.document()?.document_element()
-}
-
-fn local_storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
-}
-
-fn local_storage_get(key: &str) -> Option<String> {
-    local_storage()?.get_item(key).ok().flatten()
-}
-
-fn local_storage_set(key: &str, value: &str) {
-    if let Some(storage) = local_storage() {
-        let _ = storage.set_item(key, value);
-    }
 }
