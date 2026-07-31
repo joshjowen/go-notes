@@ -1,0 +1,87 @@
+# go-notes configuration.
+#
+# Every key here can also be set as an environment variable, which is usually
+# easier in a container: GO_NOTES__SERVER__PUBLIC_URL, GO_NOTES__AUTH__OIDC__ENABLED
+# and so on — the section and key, uppercased, joined by double underscores.
+# `DATABASE_URL` is honoured on its own as well, since that is the conventional
+# name orchestrators inject.
+
+[server]
+bind = "0.0.0.0:8080"
+
+# The origin a browser actually sees. Used to build the OIDC redirect URI and to
+# check the Origin header on writes, so it must match exactly — including the
+# scheme, and with no trailing slash. Getting this wrong shows up as every save
+# failing with "this request did not come from an allowed origin".
+public_url = "https://notes.example.com"
+
+# One subdirectory per user is created under here. This is your vault: plain
+# markdown, safe to back up with rsync, read over SSH, or keep under git.
+data_dir = "/data/notes"
+
+# Notice notes changed outside the app — over SSH, by a git pull, by a sync
+# client — and reindex them without a restart.
+watch_filesystem = true
+
+# Rescan every vault against the database at startup. Cheap, and the reason a
+# lost or corrupted database is a non-event.
+reconcile_on_start = true
+
+# Read the client address from X-Forwarded-For. Correct behind Caddy. Only login
+# throttling uses it, never authorisation.
+trust_proxy_headers = true
+
+[database]
+url = "postgres://go_notes:go_notes@postgres:5432/go-notes"
+max_connections = 10
+
+# Containers start before Postgres is ready to answer. Retrying here rather than
+# relying on `depends_on` is what makes Docker and Podman behave the same way.
+connect_timeout_secs = 60
+
+[auth]
+session_ttl_days = 30
+
+# Sends the Secure cookie flag. Turn this off *only* for plain-HTTP local
+# testing — with it on, a browser will not send the cookie over HTTP at all, and
+# the app appears to log you out instantly.
+cookie_secure = true
+
+[auth.local]
+# Username and password against a JSON file. Useful on its own, and worth
+# keeping enabled alongside OIDC as a way back in if Authelia is unavailable.
+enabled = true
+users_file = "/config/users.json"
+
+[auth.oidc]
+enabled = false
+issuer_url = "https://auth.example.com"
+client_id = "go-notes"
+
+# The plaintext secret. Authelia stores only its digest; see the comment in
+# deploy/authelia/configuration.yml for how to generate the pair.
+client_secret = "CHANGE_ME"
+
+scopes = ["openid", "profile", "email", "groups"]
+
+# When set, only users whose `groups` claim contains this may sign in.
+# required_group = "notes"
+
+button_label = "Sign in with Authelia"
+
+# Also end the session at Authelia on sign-out. Without this, signing out and
+# clicking sign-in again logs straight back in, which is a real problem on a
+# shared machine.
+end_session = true
+
+[uploads]
+max_bytes = 26214400  # 25 MB
+
+# Extensions accepted for upload. The stored file's type is sniffed from its
+# contents as well, and the two must agree — a .png containing HTML is stored
+# but is never served inline.
+allowed_extensions = [
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "pdf",
+    "txt", "csv", "md", "json", "zip",
+    "mp3", "mp4", "webm", "ogg", "wav",
+]

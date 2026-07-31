@@ -1,0 +1,15 @@
+# An internal network for the stack.
+#
+# Podman creates this on demand when a container that references it starts;
+# there is no separate "create the network" step the way `docker network create`
+# would need.
+
+[Unit]
+Description=go-notes internal network
+
+[Network]
+NetworkName=go-notes
+Driver=bridge
+
+[Install]
+WantedBy=default.target

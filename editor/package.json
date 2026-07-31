@@ -1,0 +1,29 @@
+{
+  "name": "go-notes-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Milkdown-based WYSIWYG markdown editor, exposed as a small global API for the Leptos frontend",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/lang-markdown": "^6.3.2",
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.4",
+    "@milkdown/crepe": "^7.15.0",
+    "@milkdown/kit": "^7.15.0",
+    "@milkdown/prose": "^7.15.0"
+  },
+  "devDependencies": {
+    "mdast": "^2.3.2",
+    "remark": "^15.0.1",
+    "remark-gfm": "^4.0.1",
+    "typescript": "^5.7.0",
+    "unified": "^11.0.5",
+    "vite": "^6.0.0"
+  }
+}

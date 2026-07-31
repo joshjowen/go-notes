@@ -1,0 +1,142 @@
+# Authelia, configured as an OpenID Connect provider for go-notes.
+#
+# This is a working example, not a hardened production configuration. Before
+# running it anywhere real, read the notes marked CHANGE ME and generate your
+# own secrets — every value here is a placeholder and several are deliberately
+# obvious so they cannot be mistaken for real ones.
+
+theme: dark
+
+server:
+  address: 'tcp://0.0.0.0:9091'
+
+log:
+  level: info
+
+totp:
+  issuer: notes.example.com
+
+# --- who can sign in ---------------------------------------------------------
+#
+# The file backend keeps users in users_database.yml. Swap this for `ldap:` if
+# you already run a directory.
+authentication_backend:
+  password_reset:
+    disable: true
+  file:
+    path: /config/users_database.yml
+    password:
+      algorithm: argon2
+      argon2:
+        variant: argon2id
+        iterations: 3
+        memory: 65536
+        parallelism: 4
+
+# --- what they can reach -----------------------------------------------------
+access_control:
+  default_policy: deny
+  rules:
+    # `one_factor` means a password. Change to `two_factor` to require TOTP as
+    # well, which is the main reason to put Authelia in front of anything.
+    - domain: notes.example.com
+      policy: one_factor
+      subject:
+        - 'group:notes'
+
+session:
+  # CHANGE ME: openssl rand -hex 32
+  secret: 'CHANGE_ME_session_secret_at_least_64_characters_long_generated_randomly'
+  cookies:
+    - domain: example.com
+      authelia_url: https://auth.example.com
+      default_redirection_url: https://notes.example.com
+      expiration: 12h
+      inactivity: 45m
+
+regulation:
+  # Authelia's brute-force protection. This is the real reason to run it in
+  # front of go-notes: go-notes' own login throttle is in-memory and resets when
+  # the process does.
+  max_retries: 3
+  find_time: 2m
+  ban_time: 5m
+
+storage:
+  # CHANGE ME: openssl rand -hex 32
+  encryption_key: 'CHANGE_ME_storage_encryption_key_at_least_20_characters_long'
+  postgres:
+    address: 'tcp://postgres:5432'
+    database: authelia
+    username: authelia
+    password: 'CHANGE_ME_authelia_db_password'
+
+notifier:
+  # Writes password-reset and verification mails to a file instead of sending
+  # them. Replace with an `smtp:` block for real use.
+  filesystem:
+    filename: /config/notification.txt
+
+# --- OpenID Connect ----------------------------------------------------------
+identity_providers:
+  oidc:
+    # CHANGE ME. The key that signs ID tokens — the thing go-notes verifies
+    # against, so this is the root of the whole arrangement. Generate one with:
+    #
+    #   podman run --rm -v ./deploy/authelia:/keys:z docker.io/authelia/authelia:4 \
+    #     authelia crypto pair rsa generate --directory /keys
+    #
+    # then paste the contents of the generated private key below, indented to
+    # line up with the placeholder. It has to be inline: Authelia has no
+    # `_FILE` environment variable for this particular option, and reading it
+    # from a path needs the experimental template filter.
+    jwks:
+      - key_id: 'main'
+        algorithm: 'RS256'
+        use: 'sig'
+        key: |
+          -----BEGIN PRIVATE KEY-----
+          REPLACE_THIS_ENTIRE_BLOCK_WITH_YOUR_GENERATED_PRIVATE_KEY
+          -----END PRIVATE KEY-----
+
+    # CHANGE ME: openssl rand -hex 32
+    hmac_secret: 'CHANGE_ME_hmac_secret_at_least_32_characters_long'
+
+    cors:
+      endpoints: ['token', 'userinfo']
+
+    clients:
+      - client_id: 'go-notes'
+        client_name: 'go-notes'
+
+        # The *digest* of the client secret, not the secret itself. Generate the
+        # pair with:
+        #   authelia crypto hash generate pbkdf2 --variant sha512 --random --random.length 72
+        # Put the plaintext in go-notes' config as auth.oidc.client_secret, and
+        # the digest here. CHANGE ME — the digest below is a real, working one
+        # for a secret that is published in this repository, so it is worthless.
+        client_secret: '$pbkdf2-sha512$310000$1stqaoZoxO81SC1sq1LIFQ$ZshfqBg3Dxzw.SitbigjxkPo8FFCNfPYmSzdEfAPJnGCWe.zzqoFdJmUvPu3PRMOc9e5R8ZoQLjMgch4G.8NnQ'
+
+        public: false
+        authorization_policy: 'one_factor'
+        require_pkce: true
+        pkce_challenge_method: 'S256'
+
+        redirect_uris:
+          - 'https://notes.example.com/api/auth/oidc/callback'
+
+        # `groups` is what go-notes checks when auth.oidc.required_group is set.
+        scopes:
+          - 'openid'
+          - 'profile'
+          - 'email'
+          - 'groups'
+
+        userinfo_signed_response_alg: 'none'
+
+        # go-notes performs RP-initiated logout, so signing out of the notes app
+        # also ends the Authelia session rather than leaving the user able to
+        # walk straight back in. There is deliberately no
+        # `post_logout_redirect_uris` key here: Authelia rejects it outright as
+        # an unknown option, and validates the post-logout redirect against the
+        # `redirect_uris` above instead.

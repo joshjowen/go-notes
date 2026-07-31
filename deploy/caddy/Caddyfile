@@ -1,0 +1,69 @@
+# Caddy in front of go-notes and Authelia.
+#
+# Note what is *not* here: any authentication logic. Because go-notes is an OIDC
+# client that verifies Authelia's ID token signature itself, Caddy's only jobs
+# are terminating TLS and forwarding requests. There is no `forward_auth`, and
+# no `Remote-User` header for anything to trust.
+#
+# That difference matters. In the forward-auth arrangement, the application's
+# security depends on it being unreachable except through this proxy — anyone
+# who can open a socket to the app directly can simply claim to be whoever they
+# like. Here, an exposed app is still safe.
+
+{
+	# Replace with a real address: it is where Let's Encrypt sends expiry warnings.
+	email admin@example.com
+
+	# Uncomment while testing to use the staging CA and avoid rate limits.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# Applied to both sites below.
+(security_headers) {
+	header {
+		# HSTS. Leave this commented until you are certain TLS works, because
+		# browsers cache it and it is awkward to undo.
+		# Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+
+		# Caddy's own version, which is not useful to an attacker.
+		-Server
+	}
+}
+
+notes.example.com {
+	import security_headers
+
+	# go-notes sets its own Content-Security-Policy, including a hash of the
+	# WebAssembly loader. Do not override it here or the frontend will not run.
+	reverse_proxy go-notes:8080 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	# Uploads default to a 25 MB limit in go-notes; keep Caddy's above it so the
+	# app gets to produce the friendly error rather than the proxy cutting the
+	# connection.
+	request_body {
+		max_size 32MB
+	}
+}
+
+auth.example.com {
+	import security_headers
+	reverse_proxy authelia:9091
+}
+
+# --- Plain HTTP, for trying this out locally ---------------------------------
+#
+# Caddy issues real certificates for the two names above, which requires public
+# DNS. To run the whole stack on a laptop instead, comment those out and use:
+#
+# :80 {
+# 	reverse_proxy go-notes:8080
+# }
+#
+# and set `auth.cookie_secure = false` plus `public_url = "http://localhost"`
+# in the go-notes config, since a Secure cookie is not sent over plain HTTP.

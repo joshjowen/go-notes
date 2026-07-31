@@ -1,0 +1,12 @@
+[package]
+name = "go-notes-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "DTOs shared between the Go-Notes server and the Leptos frontend"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

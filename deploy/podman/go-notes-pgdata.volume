@@ -1,0 +1,9 @@
+# Postgres data. A named volume rather than a bind mount, because this is
+# derived state that only Postgres should touch — unlike the notes, which are
+# deliberately bind-mounted somewhere you can read them.
+
+[Unit]
+Description=go-notes postgres data
+
+[Volume]
+VolumeName=go-notes-pgdata

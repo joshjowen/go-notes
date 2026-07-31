@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/shared", "crates/server", "crates/ui"]
+
+# The UI crate targets wasm32 and is built by Trunk, not by a plain `cargo build`.
+# Keeping it out of the default set means `cargo build` / `cargo test` at the repo
+# root only touch the natively-compiled crates.
+default-members = ["crates/shared", "crates/server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+go-notes-shared = { path = "crates/shared" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# The UI is size-optimised by wasm-opt (`data-wasm-opt` in crates/ui/index.html)
+# rather than by a separate cargo profile, which keeps Trunk invocation plain.

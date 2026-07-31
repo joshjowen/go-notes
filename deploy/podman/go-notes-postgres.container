@@ -1,0 +1,33 @@
+[Unit]
+Description=go-notes database
+Requires=go-notes-pgdata.volume
+After=go-notes-pgdata.volume
+
+[Container]
+ContainerName=go-notes-postgres
+Image=docker.io/library/postgres:17-alpine
+AutoUpdate=registry
+
+Network=go-notes.network
+Volume=go-notes-pgdata.volume:/var/lib/postgresql/data:Z
+
+Environment=POSTGRES_USER=go_notes
+Environment=POSTGRES_DB=go_notes
+# Read from a file rather than written here, so the unit can live in version
+# control without the password in it.
+EnvironmentFile=%h/.config/go-notes/postgres.env
+
+HealthCmd=pg_isready -U go_notes
+HealthInterval=10s
+HealthRetries=12
+HealthStartPeriod=20s
+
+# No published ports: only the app container needs to reach this, and it does so
+# over the internal network.
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

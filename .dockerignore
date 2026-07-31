@@ -1,0 +1,12 @@
+# Build outputs, rebuilt inside the image.
+target/
+crates/ui/dist/
+crates/ui/assets/
+editor/node_modules/
+editor/dist/
+
+# Nothing here belongs in a build context.
+.git/
+deploy/
+*.md
+!README.md

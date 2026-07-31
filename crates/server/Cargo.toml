@@ -1,0 +1,86 @@
+[package]
+name = "go-notes-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Self-hosted Obsidian-like notes server: markdown on disk, metadata in Postgres"
+
+[[bin]]
+name = "go-notes"
+path = "src/main.rs"
+
+[features]
+default = []
+# Tests that need a live Postgres. Run with:
+#   DATABASE_URL=... cargo test -p go-notes-server --features integration
+integration = []
+
+[dependencies]
+go-notes-shared = { workspace = true }
+
+# --- web -------------------------------------------------------------------
+axum = { version = "0.8", features = ["macros", "multipart"] }
+axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "compression-gzip", "limit"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "signal", "sync", "time"] }
+http = "1"
+
+# --- storage ---------------------------------------------------------------
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "macros",
+    "migrate",
+] }
+
+# --- serialisation ---------------------------------------------------------
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = "0.10"
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# --- markdown --------------------------------------------------------------
+pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
+
+# --- filesystem ------------------------------------------------------------
+notify = "8"
+notify-debouncer-full = "0.7"
+walkdir = "2"
+blake3 = "1"
+
+# --- auth ------------------------------------------------------------------
+argon2 = { version = "0.5", features = ["std"] }
+openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
+sha2 = "0.10"
+getrandom = "0.4"
+hex = "0.4"
+
+# --- assets ----------------------------------------------------------------
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
+infer = "0.22"
+percent-encoding = "2"
+
+# --- plumbing --------------------------------------------------------------
+figment = { version = "0.10", features = ["toml", "env"] }
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+time = "0.3.45"
+base64 = "0.23.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile = "3"

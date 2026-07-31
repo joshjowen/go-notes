@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Go-Notes</title>
+
+    <!--
+      The editor bundle is a classic script, loaded before the WebAssembly
+      module so `window.GoNotesEditor` is defined by the time Rust reaches for
+      it. Both files are produced by `npm run build` in editor/ and are copied
+      into the Trunk output as-is; nothing is fetched from a remote origin,
+      because the server's Content-Security-Policy forbids it.
+    -->
+    <link data-trunk rel="copy-file" href="assets/editor-bridge.js" />
+    <link data-trunk rel="copy-file" href="assets/editor-bridge.css" />
+    <link rel="stylesheet" href="/editor-bridge.css" />
+    <script src="/editor-bridge.js"></script>
+
+    <link data-trunk rel="css" href="styles.css" />
+    <!--
+      The feature flags are not optional. Recent rustc emits post-MVP
+      WebAssembly instructions — bulk memory, saturating float casts, sign
+      extension — that wasm-opt refuses to validate unless each is explicitly
+      enabled, and the build fails outright rather than degrading. Every one of
+      these has been supported by browsers since 2021.
+    -->
+    <link
+      data-trunk
+      rel="rust"
+      data-wasm-opt="z"
+      data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-multivalue --enable-reference-types"
+    />
+  </head>
+
+  <body>
+    <noscript>
+      Go-Notes is a WebAssembly application and needs JavaScript enabled. Your
+      notes are plain markdown files on the server, so they remain readable
+      without it.
+    </noscript>
+  </body>
+</html>

@@ -1,0 +1,123 @@
+# go-notes behind Caddy, with Authelia as the identity provider.
+#
+#   podman compose -f deploy/docker-compose.yml up --build
+#   docker compose  -f deploy/docker-compose.yml up --build
+#
+# Before the first run:
+#   1. cp deploy/.env.example deploy/.env    and fill in the secrets
+#   2. edit deploy/caddy/Caddyfile           and deploy/authelia/configuration.yml
+#      to use your own domain names
+#   3. generate the OIDC signing key and the client secret pair — see the README
+#
+# For a simpler setup with no identity provider, use docker-compose.local-auth.yml.
+
+name: go-notes
+
+services:
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    restart: unless-stopped
+    # The only service that publishes ports. Everything else is reachable solely
+    # on the internal network.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - go-notes
+      - authelia
+    networks: [go-notes]
+
+  authelia:
+    image: docker.io/authelia/authelia:4
+    restart: unless-stopped
+    volumes:
+      - ./authelia:/config:z
+    environment:
+      TZ: ${TZ:-UTC}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [go-notes]
+
+  go-notes:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: go-notes:latest
+    restart: unless-stopped
+    environment:
+      GO_NOTES__SERVER__PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+      DATABASE_URL: postgres://go_notes:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/go-notes
+
+      # Authelia is the primary way in.
+      GO_NOTES__AUTH__OIDC__ENABLED: "true"
+      GO_NOTES__AUTH__OIDC__ISSUER_URL: ${OIDC_ISSUER_URL:?set OIDC_ISSUER_URL in .env}
+      GO_NOTES__AUTH__OIDC__CLIENT_ID: go-notes
+      GO_NOTES__AUTH__OIDC__CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET in .env}
+
+      # Password login stays available as a way back in if Authelia is down.
+      # Set it to "false" if you would rather have exactly one route in.
+      GO_NOTES__AUTH__LOCAL__ENABLED: "true"
+
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      # A bind mount rather than a named volume, on purpose: the whole point of
+      # storing notes as markdown is that you can read them without this app.
+      # `:z` relabels for SELinux, which Fedora and RHEL require.
+      - ${NOTES_DIR:-./data/notes}:/data/notes:z
+      - ./config:/config:z
+    # Rootless Podman maps your host account to *root* inside the container, so
+    # the container's own uid 1000 lands on an unprivileged subuid that cannot
+    # write to a bind mount you own — `go-notes user add` fails with "Permission
+    # denied" and no vault is ever created. `keep-id` maps container uid 1000
+    # back to yours, so the markdown files come out owned by you.
+    #
+    # Docker neither understands nor needs this: its daemon runs as root and
+    # bind mounts are not remapped. For Docker, put `USERNS_MODE=` (empty) in
+    # deploy/.env, or delete this line.
+    userns_mode: ${USERNS_MODE:-keep-id:uid=1000,gid=1000}
+    healthcheck:
+      # Declared here as well as in the Dockerfile: podman's default OCI image
+      # format discards the image's own HEALTHCHECK instruction.
+      test: ["CMD", "/usr/local/bin/go-notes", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [go-notes]
+
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: go_notes
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: go_notes
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Authelia keeps its own state in the same server, in a separate database.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U go_notes"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [go-notes]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  go-notes:
+    driver: bridge

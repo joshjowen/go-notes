@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Local password accounts. Copy to users.json and manage it with the CLI",
+    "rather than by hand:",
+    "  go-notes user add josh          — add, or change a password",
+    "  go-notes user list              — show accounts",
+    "  go-notes user remove josh       — remove (their notes stay on disk)",
+    "In a container:",
+    "  podman exec -it go-notes go-notes user add josh",
+    "Hashes are argon2id at OWASP's recommended parameters. A plaintext password",
+    "here is rejected at startup with an explanation rather than silently failing."
+  ],
+  "users": [
+    {
+      "username": "josh",
+      "display_name": "Josh Owen",
+      "email": "josh@example.com",
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHR2YWx1ZQ$REPLACE.THIS.WITH.A.REAL.HASH.FROM.THE.CLI"
+    }
+  ]
+}

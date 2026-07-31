@@ -1,0 +1,109 @@
+# go-notes with password login and no identity provider.
+#
+#   podman compose -f deploy/docker-compose.local-auth.yml up --build
+#
+# Then create an account:
+#   podman exec -it go-notes-go-notes-1 go-notes user add josh
+#
+# and open http://localhost:8080.
+#
+# This is the smallest thing that works: three containers, no DNS, no
+# certificates, no Authelia. Notes land in ./data/notes as ordinary markdown.
+#
+# Caddy is included but commented out, because on a laptop it has nothing useful
+# to do — go-notes serves the frontend itself. Uncomment it when you put this on a
+# real host with a real domain.
+
+name: go-notes
+
+services:
+  go-notes:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: go-notes:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Must match the address you actually type in the browser, because writes
+      # are refused if the Origin header disagrees with it. If you reach this at
+      # http://127.0.0.1:8080 rather than localhost, change it here to match.
+      GO_NOTES__SERVER__PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+
+      # No TLS on a laptop, so the Secure flag has to come off — a browser will
+      # not send a Secure cookie over plain HTTP, and the app would appear to
+      # log you out on every request. Turn this back on the moment there is TLS.
+      GO_NOTES__AUTH__COOKIE_SECURE: "false"
+
+      # Reached directly rather than through a proxy, so X-Forwarded-For is
+      # client-controlled and must not be believed.
+      GO_NOTES__SERVER__TRUST_PROXY_HEADERS: "false"
+
+      GO_NOTES__AUTH__LOCAL__ENABLED: "true"
+      GO_NOTES__AUTH__OIDC__ENABLED: "false"
+
+      DATABASE_URL: postgres://go_notes:go_notes@postgres:5432/go-notes
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - ${NOTES_DIR:-./data/notes}:/data/notes:z
+      - ./config:/config:z
+    # Rootless Podman maps your host account to *root* inside the container, so
+    # the container's own uid 1000 lands on an unprivileged subuid that cannot
+    # write to a bind mount you own — `go-notes user add` fails with "Permission
+    # denied" and no vault is ever created. `keep-id` maps container uid 1000
+    # back to yours, so the markdown files come out owned by you.
+    #
+    # Docker neither understands nor needs this: its daemon runs as root and
+    # bind mounts are not remapped. For Docker, put `USERNS_MODE=` (empty) in
+    # deploy/.env, or delete this line.
+    userns_mode: ${USERNS_MODE:-keep-id:uid=1000,gid=1000}
+    healthcheck:
+      # Declared here as well as in the Dockerfile: podman's default OCI image
+      # format discards the image's own HEALTHCHECK instruction.
+      test: ["CMD", "/usr/local/bin/go-notes", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [go-notes]
+
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: go_notes
+      POSTGRES_PASSWORD: go-notes
+      POSTGRES_DB: go_notes
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U go_notes"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [go-notes]
+
+  # caddy:
+  #   image: docker.io/library/caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+  #     - caddy_data:/data
+  #   depends_on: [go-notes]
+  #   networks: [go-notes]
+
+volumes:
+  pgdata:
+  # caddy_data:
+
+networks:
+  go-notes:
+    driver: bridge

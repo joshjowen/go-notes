@@ -1,0 +1,18 @@
+# Authelia's user list.
+#
+# The `groups` entry is what go-notes reads when auth.oidc.required_group is set,
+# and what the access_control rule in configuration.yml matches on.
+#
+# Generate a password digest with:
+#   podman run --rm docker.io/authelia/authelia:latest \
+#     authelia crypto hash generate argon2 --password 'your password here'
+
+users:
+  josh:
+    disabled: false
+    displayname: 'Josh Owen'
+    # CHANGE ME. This digest is for the password "authelia" and must not be used.
+    password: '$argon2id$v=19$m=65536,t=3,p=4$BpLnfgDsc2WD8F2q$o/vzA4myCqZZ36bUGsDY//8mKUYNZZaR0t4MFFSs+iM'
+    email: josh@example.com
+    groups:
+      - notes

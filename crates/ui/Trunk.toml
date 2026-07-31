@@ -1,0 +1,29 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+# `public_url = "/"` because the server mounts the bundle at the site root and
+# serves index.html for any unmatched path, so a deep link like
+# /note/Projects/A.md still resolves its assets against the root.
+public_url = "/"
+
+[watch]
+# The editor bundle in assets/ is built by Vite, not by Trunk. Watching it would
+# make `trunk serve` rebuild the whole WASM app every time Vite writes, which is
+# slower than just restarting Trunk on the rare occasions the bridge changes.
+ignore = ["assets"]
+
+[serve]
+port = 8081
+
+# During development the API lives in the separately-run `go-notes serve`
+# process. Proxying keeps the frontend same-origin, which both the session
+# cookie and the server's Origin check require.
+[[proxy]]
+backend = "http://127.0.0.1:8099/api/"
+
+[tools]
+# Trunk pins wasm-opt 116 by default, which predates the bulk-memory
+# instructions rustc now emits and rejects the module outright. Any binaryen
+# from 118 onward validates them.
+wasm_opt = "version_123"

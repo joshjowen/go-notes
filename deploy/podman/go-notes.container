@@ -1,0 +1,53 @@
+[Unit]
+Description=go-notes
+Requires=go-notes-postgres.container
+After=go-notes-postgres.container
+
+[Container]
+ContainerName=go-notes
+Image=localhost/go-notes:latest
+AutoUpdate=local
+
+Network=go-notes.network
+
+# The two mappings that make rootless Podman behave.
+#
+# `keep-id` maps the container's UID 1000 back to *your* user on the host, so
+# the markdown files land owned by you and are readable over SSH without sudo.
+# Without it they would be owned by an unmapped subuid and effectively
+# untouchable outside the container.
+UserNS=keep-id:uid=1000,gid=1000
+
+# `:Z` relabels the mount for SELinux, which Fedora and RHEL enforce. Omit it
+# and the container gets permission denied on a directory that looks
+# world-writable. Use `:z` instead if the same directory is shared with another
+# container.
+Volume=%h/notes:/data/notes:Z
+Volume=%h/.config/go-notes:/config:Z
+
+Environment=GO_NOTES__SERVER__DATA_DIR=/data/notes
+Environment=GO_NOTES__AUTH__LOCAL__USERS_FILE=/config/users.json
+Environment=RUST_LOG=info
+EnvironmentFile=%h/.config/go-notes/go-notes.env
+
+# Rootless cannot bind below 1024 without granting the capability, so this sits
+# on 8080 and Caddy (or a host reverse proxy) fronts it.
+PublishPort=127.0.0.1:8080:8080
+
+HealthCmd=/usr/local/bin/go-notes healthcheck
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=20s
+
+# Nothing in the container needs to write outside the volumes.
+ReadOnly=true
+Tmpfs=/tmp
+NoNewPrivileges=true
+DropCapability=ALL
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

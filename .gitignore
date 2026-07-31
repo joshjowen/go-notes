@@ -1,0 +1,51 @@
+# --- build output ----------------------------------------------------------
+/target/
+**/*.rs.bk
+
+# Produced by `trunk build` and by Vite. Both are regenerated from source, and
+# the WASM bundle in particular is a large binary that would bloat history.
+/crates/ui/dist/
+/crates/ui/assets/
+/editor/node_modules/
+/editor/dist/
+
+# --- secrets and real data -------------------------------------------------
+#
+# The *.example.* files under deploy/ are committed on purpose. The versions
+# without "example" in the name are the ones that end up holding real
+# credentials, so they are excluded by name rather than by pattern.
+/deploy/.env
+/deploy/config/config.toml
+/deploy/config/users.json
+/deploy/authelia/oidc.key
+/deploy/authelia/db.sqlite3
+/deploy/authelia/notification.txt
+
+# Someone's actual notes. If a vault ever lands here it should be by explicit
+# choice, not because a compose default put it in the repository.
+/deploy/data/
+/data/
+
+# Stray key material, wherever it turns up.
+*.key
+*.pem
+*.p12
+*.pfx
+
+# --- local development -----------------------------------------------------
+/config.toml
+/users.json
+*.log
+
+# Local tooling configuration — per-machine permission grants and preferences,
+# not project settings.
+/.claude/
+
+# --- editors and operating systems -------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

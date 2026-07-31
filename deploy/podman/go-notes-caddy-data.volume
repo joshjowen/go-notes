@@ -1,0 +1,8 @@
+# Caddy's certificate store. Keep this: losing it means re-issuing certificates
+# on every restart, which will hit Let's Encrypt's rate limits.
+
+[Unit]
+Description=go-notes caddy data
+
+[Volume]
+VolumeName=go-notes-caddy-data

@@ -1,0 +1,194 @@
+/*
+ * Editor-specific styling.
+ *
+ * Only the parts Milkdown owns live here — the pill a wikilink renders as, the
+ * autocomplete popup, and the editor surface itself. Everything is expressed in
+ * the `--gn-*` custom properties defined by the app shell, so the editor follows
+ * the light/dark theme without knowing anything about it.
+ */
+
+.gn-editor-wysiwyg,
+.gn-editor-source {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------------ links */
+
+.gn-wikilink {
+  color: var(--gn-accent);
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--gn-accent) 35%, transparent);
+}
+
+.gn-wikilink:hover {
+  background: color-mix(in srgb, var(--gn-accent) 12%, transparent);
+  border-bottom-color: var(--gn-accent);
+}
+
+/* A link to a note that does not exist yet. Obsidian shows these differently
+   so a typo is obvious while writing rather than at read time. */
+.gn-wikilink-unresolved {
+  color: var(--gn-unresolved);
+  border-bottom-style: dashed;
+  border-bottom-color: color-mix(in srgb, var(--gn-unresolved) 50%, transparent);
+}
+
+.gn-wikilink-unresolved:hover {
+  background: color-mix(in srgb, var(--gn-unresolved) 12%, transparent);
+}
+
+/* -------------------------------------------------------------- autocomplete */
+
+.gn-wikilink-popup {
+  position: fixed;
+  z-index: 1000;
+  min-width: 280px;
+  max-width: 460px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--gn-bg-float);
+  border: 1px solid var(--gn-border);
+  border-radius: 8px;
+  box-shadow: var(--gn-shadow);
+}
+
+.gn-wikilink-option {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--gn-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gn-wikilink-option:hover,
+.gn-wikilink-option.gn-selected {
+  background: var(--gn-bg-selected);
+}
+
+.gn-wikilink-option-title {
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gn-wikilink-option-path {
+  flex: 1 1 auto;
+  color: var(--gn-text-faint);
+  font-size: 0.82em;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------ prose surface */
+
+.milkdown {
+  background: transparent;
+  color: var(--gn-text);
+}
+
+.milkdown .ProseMirror {
+  padding: 8px 0 40vh 0;
+  outline: none;
+  /* A generous trailing space so the last line of a note is never pinned to the
+     bottom edge of the window while typing. */
+  font-family: var(--gn-font-text);
+  line-height: 1.6;
+}
+
+.milkdown .ProseMirror h1,
+.milkdown .ProseMirror h2,
+.milkdown .ProseMirror h3,
+.milkdown .ProseMirror h4 {
+  color: var(--gn-heading);
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.2em 0 0.5em;
+}
+
+.milkdown .ProseMirror h1 { font-size: 1.8em; }
+.milkdown .ProseMirror h2 { font-size: 1.45em; }
+.milkdown .ProseMirror h3 { font-size: 1.2em; }
+
+.milkdown .ProseMirror p {
+  margin: 0.6em 0;
+}
+
+.milkdown .ProseMirror a {
+  color: var(--gn-accent);
+}
+
+.milkdown .ProseMirror blockquote {
+  margin: 0.8em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--gn-border-strong);
+  color: var(--gn-text-muted);
+}
+
+.milkdown .ProseMirror code {
+  font-family: var(--gn-font-mono);
+  font-size: 0.9em;
+  background: var(--gn-bg-code);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+.milkdown .ProseMirror pre {
+  background: var(--gn-bg-code);
+  border: 1px solid var(--gn-border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.milkdown .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--gn-border);
+  margin: 1.5em 0;
+}
+
+.milkdown .ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.8em 0;
+}
+
+.milkdown .ProseMirror th,
+.milkdown .ProseMirror td {
+  border: 1px solid var(--gn-border);
+  padding: 6px 10px;
+}
+
+.milkdown .ProseMirror th {
+  background: var(--gn-bg-secondary);
+  font-weight: 600;
+}
+
+.milkdown .ProseMirror img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.milkdown .ProseMirror ul,
+.milkdown .ProseMirror ol {
+  padding-left: 1.6em;
+  margin: 0.5em 0;
+}
+
+.milkdown .ProseMirror li {
+  margin: 0.2em 0;
+}

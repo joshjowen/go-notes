@@ -1,0 +1,31 @@
+# Optional: TLS termination in front of go-notes.
+#
+# Rootless containers cannot bind 80 and 443 by default. Either lower the
+# unprivileged port floor:
+#     sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+#     echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/99-rootless-ports.conf
+# or leave the ports below as 8443/8080 and forward to them from a host-level
+# proxy. Do not run the whole stack as root just to get port 443.
+
+[Unit]
+Description=go-notes reverse proxy
+Requires=go-notes.container
+After=go-notes.container
+
+[Container]
+ContainerName=go-notes-caddy
+Image=docker.io/library/caddy:2-alpine
+AutoUpdate=registry
+
+Network=go-notes.network
+Volume=%h/.config/go-notes/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+Volume=go-notes-caddy-data.volume:/data:Z
+
+PublishPort=8080:80
+PublishPort=8443:443
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
