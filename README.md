@@ -33,6 +33,12 @@ on disk is still plain `.md` that `grep`, `git` and every other tool understand.
 - **Attachments.** Drag an image in; it is stored beside your notes.
 - **External edits.** Edit a note over SSH, `git pull` a vault, restore a backup —
   a filesystem watcher notices and reindexes without a restart.
+- **Works with the server unreachable.** Notes you have opened stay readable and
+  editable, new ones can be written, and everything queues until the connection
+  is back. The app says plainly when it is in that state, and when it syncs it
+  asks you about anything that collided rather than picking a winner.
+- **Runs air-gapped.** Nothing is fetched from anyone else's server at runtime —
+  no CDN, no webfont, no connectivity check against a third party.
 - **Multiple users**, each with their own vault directory, via Authelia (OIDC) or
   a local password file.
 
@@ -213,6 +219,88 @@ path preserved underneath, so a mis-click is undone with `mv`.
 
 A vault is a good candidate for `git init`. Which brings us to:
 
+## Working offline
+
+Close the laptop on a train, and Go-Notes keeps working. The rule is the same
+one that shapes the rest of the application — **nothing is thrown away, and
+nothing is silently overwritten** — applied to a server that is not answering.
+
+**What you get.** The notes you have opened on that device stay readable and
+editable. New notes and folders can be created, renamed and deleted. Search, the
+quick switcher, tags and backlinks all keep working against what the device
+holds. Every change is written to the browser's IndexedDB immediately and queued
+for the server.
+
+**How you know.** A bar across the top says `Local only`, and the status control
+in the toolbar shows how many changes are waiting. Open it for the list, to
+force a sync, or to discard something the server has refused. A tab holding
+work that has not reached the server carries a `⧗`.
+
+**What happens when it comes back.** A reachability probe against
+`/api/me` — not `navigator.onLine`, which reports whether the machine has a
+network rather than whether *this server* is answering — notices, and the queue
+replays in order. Successive edits to one note collapse into a single write, and
+each write carries the content hash the server itself last issued, so the
+`If-Match` check still means what it means online.
+
+**Conflicts are a question, not a policy.** If a note changed on the server
+while you were also editing it, the replay stops and shows you a line diff of
+the two versions with three ways out: keep yours, take the server's, or keep
+both (yours is saved alongside as `Note (conflicted copy …).md`). Everything
+queued behind it stays queued until you have decided. The same dialog handles
+the ordinary online case where a note changed on disk mid-edit.
+
+**What does not work offline**, and says so rather than pretending:
+
+- **Signing in.** There is no local password to check; a device already signed
+  in stays signed in.
+- **The graph.** It is built from the link table for the whole vault, and the
+  device only holds the notes it has opened. A partial graph would not be a
+  smaller truth, it would be a wrong one.
+- **Attachments.** Uploading needs the server. Queueing the bytes would mean
+  putting a link into your note that resolves to nothing, and then rewriting
+  your text later to correct the path — editing someone's writing behind their
+  back to cover for a feature that was not available.
+- **Rewriting `[[links]]` on a rename.** The rename happens locally; the links
+  in other notes are rewritten by the server when the move is replayed.
+
+**Where it is kept, and how to clear it.** Notes cached for offline use live in
+the browser's IndexedDB under the origin the app is served from. Signing out
+wipes it, as does signing in as a different user; **Forget this device's local
+copy** in the command palette (`Ctrl+Shift+P`) does it on demand.
+
+**Reloading while disconnected** needs the service worker that caches the
+application shell, and browsers only allow service workers on a secure context:
+HTTPS, or `localhost` for development. On a plain-HTTP deployment reached by IP
+or hostname, offline editing still works for as long as the tab stays open, but
+reloading will not start the app. That is a reason to put Caddy in front, which
+the compose files already do.
+
+## Air-gapped networks
+
+Go-Notes is built to run with no route to the internet at all.
+
+- Nothing on the page is fetched from another origin: no CDN, no webfont, no
+  icon service, no analytics. The WebAssembly bundle, the editor and its
+  stylesheet are all served by the same binary, and text uses the operating
+  system's own font stack.
+- The Content-Security-Policy allows `'self'` and nothing else, so a reference
+  that slipped in would be refused rather than quietly fetched.
+- "Are we online?" is answered by asking *this* server, never a third party's
+  reachability endpoint.
+- `cargo test` includes [`crates/server/tests/airgap.rs`](crates/server/tests/airgap.rs),
+  which fails the build if any `src=`, `href=`, `url(...)` or `@import` in the
+  frontend points at another origin — including one arriving through an npm
+  dependency of the editor bundle.
+
+The two things that *do* leave the machine are both yours and both optional: the
+OIDC provider, if you configure one, and Postgres. An install using local
+accounts talks to nothing but its own database.
+
+Container images still have to be built somewhere with a network, or pulled in
+and loaded with `podman load`; that is a build-time dependency, not a runtime
+one.
+
 ## Known limitations
 
 **The editor normalises markdown formatting.** A WYSIWYG editor round-trips your
@@ -239,6 +327,12 @@ block is persistent.
 **No note history.** Files are plain, so `git init` in a vault covers this well
 in the meantime.
 
+**Offline mode only knows the notes you have opened.** There is no "make the
+whole vault available offline" button, so search and backlinks while
+disconnected cover what that device has read rather than the entire vault, and
+they match plainly rather than with the server's stemming and trigram fallback.
+The pane says as much rather than presenting a short list as a complete one.
+
 **RP-initiated logout depends on the provider advertising it.** Go-Notes only
 sends the user on to the identity provider's `end_session_endpoint` if discovery
 reports one. Some Authelia configurations do not, in which case signing out ends
@@ -252,6 +346,9 @@ machine.
 ```sh
 # Backend and shared crates
 cargo test
+
+# The frontend, including the offline queue, sync and local index
+cargo test -p go-notes-ui
 
 # The editor bridge's markdown round-trip
 cd editor && npm install && node --test --experimental-strip-types test/
@@ -293,17 +390,19 @@ go-notes healthcheck
 
 ```
 crates/server/   axum backend; vault/ holds all filesystem access
-crates/ui/       Leptos frontend
+crates/ui/       Leptos frontend; offline/ holds the local vault and sync
+crates/ui/sw.js  service worker caching the app shell for offline reloads
 crates/shared/   DTOs and path rules shared by both
 editor/          the Milkdown bridge (TypeScript)
 migrations/      sqlx migrations
 deploy/          compose files, Quadlet units, Caddy and Authelia examples
 ```
 
-Two places carry more comment than usual because they are where mistakes are
+Three places carry more comment than usual because they are where mistakes are
 expensive: `crates/shared/src/paths.rs` and `crates/server/src/vault/path.rs`
-(the two-stage path safety gate), and `crates/server/src/vault/index.rs` (link
-rewriting, which edits your files).
+(the two-stage path safety gate), `crates/server/src/vault/index.rs` (link
+rewriting, which edits your files), and `crates/ui/src/offline/` (the outbox and
+its replay, which decides what happens to writing that exists in two places).
 
 ## Security notes
 
@@ -321,7 +420,14 @@ rewriting, which edits your files).
 - Writes require a same-origin `Origin` header, on top of a `SameSite=Lax`
   cookie.
 - Saves carry an `If-Match` content hash, so a concurrent edit surfaces as a
-  conflict you resolve rather than as silent data loss.
+  conflict you resolve rather than as silent data loss — including a save queued
+  offline days earlier, which replays against the hash the server itself issued.
+- Offline mode caches note contents in the browser's IndexedDB. That is real
+  data at rest on the device, so it is cleared on sign-out, cleared when a
+  different user signs in, and removable on demand from the command palette. On
+  a machine you do not control, sign out rather than closing the tab.
+- The frontend loads nothing from another origin, and a test enforces it. Beyond
+  air-gapped deployments, that is one fewer party who can serve your users code.
 
 ## Licence
 

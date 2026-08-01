@@ -53,6 +53,15 @@ fn content_security_policy() -> HeaderValue {
         //
         // `img-src` allows `data:` and `blob:` so a pasted image can be shown
         // before its upload has finished.
+        //
+        // `worker-src 'self'` is what lets the offline service worker register.
+        // It would be covered by `default-src` anyway; stating it means a later
+        // loosening of `default-src` cannot quietly widen where a worker may
+        // come from, which is the one script context that outlives the page.
+        //
+        // Note what is *not* here: no CDN, no font host, no analytics origin.
+        // Everything the page needs is served by this binary, which is what
+        // makes an air-gapped deployment work rather than merely start.
         let policy = format!(
             "default-src 'self'; \
              script-src 'self' 'wasm-unsafe-eval'{hashes}; \
@@ -60,6 +69,7 @@ fn content_security_policy() -> HeaderValue {
              img-src 'self' data: blob:; \
              font-src 'self' data:; \
              connect-src 'self'; \
+             worker-src 'self'; \
              media-src 'self' blob:; \
              object-src 'none'; \
              base-uri 'none'; \

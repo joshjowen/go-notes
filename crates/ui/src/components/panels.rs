@@ -4,8 +4,8 @@ use go_notes_shared::{SearchHit, SNIPPET_CLOSE, SNIPPET_OPEN};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::api;
 use crate::state::use_app;
+use crate::vault;
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -18,6 +18,11 @@ pub fn TabBar() -> impl IntoView {
     view! {
         <div class="gn-tabs">
             {move || {
+                // Notes whose latest text is on this device and not yet on the
+                // server. Distinct from "dirty": dirty means unsaved, this means
+                // saved *here*.
+                let waiting = crate::offline::queue::pending_paths(&state.pending.get());
+
                 state
                     .tabs
                     .get()
@@ -28,6 +33,7 @@ pub fn TabBar() -> impl IntoView {
                         let title = tab.title.clone();
                         let path = tab.path.clone();
                         let dirty = tab.dirty;
+                        let queued = waiting.iter().any(|pending| *pending == tab.path);
 
                         view! {
                             <div
@@ -44,6 +50,17 @@ pub fn TabBar() -> impl IntoView {
                                 }
                             >
                                 <span class="gn-tab-title">{title}</span>
+                                {queued
+                                    .then(|| {
+                                        view! {
+                                            <span
+                                                class="gn-tab-queued"
+                                                title="Saved on this device, waiting to sync"
+                                            >
+                                                "⧗"
+                                            </span>
+                                        }
+                                    })}
                                 {if dirty {
                                     view! {
                                         <span class="gn-tab-dirty" title="Unsaved changes"></span>
@@ -92,8 +109,8 @@ pub fn SearchPane() -> impl IntoView {
         }
         searching.set(true);
         spawn_local(async move {
-            match api::search(text).await {
-                Ok(response) => hits.set(response.hits),
+            match vault::search(state, text).await {
+                Ok(found) => hits.set(found),
                 Err(err) => state.error(err.user_message()),
             }
             searching.set(false);
@@ -200,11 +217,7 @@ pub fn TagPane() -> impl IntoView {
     Effect::new(move |_| {
         // Refetched whenever a save might have changed the tag set.
         let _ = state.tree_epoch.get();
-        spawn_local(async move {
-            if let Ok(found) = api::tags().await {
-                tags.set(found);
-            }
-        });
+        spawn_local(async move { tags.set(vault::tags(state).await) });
     });
 
     view! {
@@ -234,9 +247,7 @@ pub fn TagPane() -> impl IntoView {
                                             let name = name.clone();
                                             selected.set(Some(name.clone()));
                                             spawn_local(async move {
-                                                if let Ok(notes) = api::notes_with_tag(name).await {
-                                                    tagged.set(notes);
-                                                }
+                                                tagged.set(vault::notes_with_tag(state, name).await)
                                             });
                                         }
                                     >

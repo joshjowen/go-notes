@@ -69,6 +69,29 @@ pub struct Conflict {
     pub theirs: String,
     pub their_hash: String,
     pub mine: String,
+    pub origin: ConflictOrigin,
+}
+
+/// Where a conflict came from, which decides what resolving it has to tidy up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictOrigin {
+    /// A save from the open editor lost its `If-Match` check.
+    Live,
+    /// A change made offline could not be replayed as it stood. Resolving it
+    /// also settles the queued operation identified here.
+    Sync { op_id: u64 },
+}
+
+/// What the sync engine is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncPhase {
+    /// Nothing to do, or nothing being done.
+    Idle,
+    /// Replaying the outbox.
+    Syncing,
+    /// Stopped and waiting for a person: a conflict to resolve, or a session to
+    /// sign back into. Queued work is intact.
+    Blocked,
 }
 
 #[derive(Clone, Copy)]
@@ -91,7 +114,23 @@ pub struct AppState {
     pub theme_dialog_open: RwSignal<bool>,
     pub editor_mode: RwSignal<EditorMode>,
     pub toast: RwSignal<Option<Toast>>,
-    pub conflict: RwSignal<Option<Conflict>>,
+    /// Conflicts waiting for a decision; the dialog shows the first of them.
+    pub conflicts: RwSignal<Vec<Conflict>>,
+    /// False when the server could not be reached: the app is running on what
+    /// this device holds, and every change is being queued.
+    pub online: RwSignal<bool>,
+    pub sync: RwSignal<SyncPhase>,
+    /// Changes made here that the server has not accepted yet.
+    pub pending: RwSignal<Vec<crate::offline::queue::QueuedOp>>,
+    /// Why syncing is paused, when it is — an expired session, say.
+    pub sync_message: RwSignal<Option<String>>,
+    /// False when the browser will not give us local storage at all (a private
+    /// window, a full disk, a strict privacy setting), which changes what we
+    /// can honestly promise about working offline.
+    pub offline_storage: RwSignal<bool>,
+    /// Bumped when the open note should be re-read from the vault — after a
+    /// sync, or when the user chooses the server's version of a conflict.
+    pub reload_requested: RwSignal<u32>,
     /// Bumped whenever the tree needs refetching.
     pub tree_epoch: RwSignal<u32>,
     /// Bumped whenever the graph needs refetching.
@@ -128,7 +167,16 @@ impl AppState {
             theme_dialog_open: RwSignal::new(false),
             editor_mode: RwSignal::new(EditorMode::Wysiwyg),
             toast: RwSignal::new(None),
-            conflict: RwSignal::new(None),
+            conflicts: RwSignal::new(Vec::new()),
+            // Optimistic until a request says otherwise: the browser's own idea
+            // of connectivity is only a starting point, and the first call to
+            // `/api/me` settles it either way.
+            online: RwSignal::new(crate::offline::net::browser_thinks_online()),
+            sync: RwSignal::new(SyncPhase::Idle),
+            pending: RwSignal::new(Vec::new()),
+            sync_message: RwSignal::new(None),
+            offline_storage: RwSignal::new(true),
+            reload_requested: RwSignal::new(0),
             tree_epoch: RwSignal::new(0),
             graph_epoch: RwSignal::new(0),
             save_requested: RwSignal::new(0),
@@ -153,6 +201,38 @@ impl AppState {
     pub fn request_save(&self) {
         self.save_requested
             .update(|count| *count = count.wrapping_add(1));
+    }
+
+    /// Asks the editor pane to re-read the open note from the vault.
+    ///
+    /// Used after a sync and after "use the server's version", both of which
+    /// change the text under a tab that may be on screen.
+    pub fn request_reload(&self) {
+        self.reload_requested
+            .update(|count| *count = count.wrapping_add(1));
+    }
+
+    /// Queues a conflict for the resolution dialog.
+    ///
+    /// A second conflict on a note already waiting replaces the first: they are
+    /// the same disagreement, and showing it twice would ask the user to make
+    /// the same decision about stale text.
+    pub fn push_conflict(&self, conflict: Conflict) {
+        self.conflicts.update(|conflicts| {
+            conflicts.retain(|existing| existing.path != conflict.path);
+            conflicts.push(conflict);
+        });
+    }
+
+    pub fn clear_conflict(&self, path: &str) {
+        self.conflicts
+            .update(|conflicts| conflicts.retain(|conflict| conflict.path != path));
+    }
+
+    /// True when the app is running on what this device holds, with the server
+    /// unreachable.
+    pub fn local_only(&self) -> bool {
+        !self.online.get()
     }
 
     pub fn refresh_tree(&self) {
@@ -223,6 +303,17 @@ impl AppState {
                 other => other,
             };
         });
+    }
+
+    pub fn close_tab_with_path(&self, path: &str) {
+        let index = self
+            .tabs
+            .get_untracked()
+            .iter()
+            .position(|tab| tab.path == path);
+        if let Some(index) = index {
+            self.close_tab(index);
+        }
     }
 
     /// Renames a tab in place after the note it holds has been moved.

@@ -10,7 +10,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::api;
-use crate::components::tree::{create_folder_in, create_note_in};
+use crate::components::tree::{confirm, create_folder_in, create_note_in};
+use crate::vault;
 use crate::state::{use_app, AppState, MainView, Palette, RightPanel};
 
 /// One selectable row.
@@ -44,10 +45,8 @@ pub fn CommandPalette() -> impl IntoView {
         }
         let text = query.get();
         spawn_local(async move {
-            if let Ok(items) = api::quickswitch(text).await {
-                notes.set(items);
-                selected.set(0);
-            }
+            notes.set(vault::quickswitch(state, text).await);
+            selected.set(0);
         });
     });
 
@@ -106,10 +105,10 @@ pub fn CommandPalette() -> impl IntoView {
             RowAction::CreateNote { path } => {
                 let title = go_notes_shared::paths::stem(&path).to_string();
                 spawn_local(async move {
-                    match api::create_note(path, format!("# {title}\n\n")).await {
-                        Ok(response) => {
+                    match vault::create_note(state, path, format!("# {title}\n\n")).await {
+                        Ok(written) => {
                             state.refresh_all();
-                            state.open_tab(response.meta.path.clone(), response.meta.title.clone());
+                            state.open_tab(written.path.clone(), written.title.clone());
                         }
                         Err(err) => state.error(err.user_message()),
                     }
@@ -256,8 +255,37 @@ fn commands() -> Vec<Row> {
                     }
                 })
         }),
+        row("Sync now", "", |state| vault::sync_now(state)),
+        row("Forget this device's local copy", "", |state| {
+            // Offered because "the notes are cached in this browser" is a thing
+            // someone may want to undo on a machine that is not theirs, without
+            // having to find the browser's own storage settings.
+            let pending = state.pending.get_untracked().len();
+            let warning = if pending == 0 {
+                "Remove the notes cached in this browser?\n\nThey stay on the server."
+                    .to_string()
+            } else {
+                format!(
+                    "Remove the notes cached in this browser?\n\n{pending} change(s) made \
+                     offline have not reached the server yet and would be lost."
+                )
+            };
+            if !confirm(&warning) {
+                return;
+            }
+            spawn_local(async move {
+                crate::offline::cache::forget_everything().await;
+                state.pending.set(Vec::new());
+                state.notify("Local copy removed from this browser.");
+            });
+        }),
         row("Sign out", "", |state| {
             spawn_local(async move {
+                // The cached notes go before the session does: a shared machine
+                // must not be left holding somebody's vault after they sign out.
+                crate::offline::cache::forget_everything().await;
+                state.pending.set(Vec::new());
+
                 match api::logout().await {
                     Ok(response) => {
                         // With Authelia, signing out here should also end the

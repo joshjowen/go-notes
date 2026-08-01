@@ -17,8 +17,11 @@ use crate::components::panels::{
 use crate::components::theme_editor::ThemeEditor;
 use crate::components::topbar::TopBar;
 use crate::components::tree::{create_note_in, FileTree};
+use crate::offline::diff::{change_counts, diff_lines, DiffKind};
+use crate::offline::{self, sync};
 use crate::state::{use_app, AppState, LeftPanel, MainView, Palette, RightPanel, ToastKind};
 use crate::theme;
+use crate::vault;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -52,12 +55,33 @@ pub fn App() -> impl IntoView {
 
     // Find out who we are. A 401 here is the normal unauthenticated case, not an
     // error worth showing.
+    //
+    // The server being unreachable is a third case, and the one that decides
+    // whether offline mode is any use at all: if this device has been signed in
+    // before, we know who the user is and what their vault looked like, so the
+    // application opens on their notes instead of on a login screen it cannot
+    // service anyway.
     let checked = RwSignal::new(false);
     Effect::new(move |_| {
         spawn_local(async move {
+            offline::init(state).await;
+
             match api::me().await {
-                Ok(me) => state.me.set(Some(me)),
-                Err(ApiFailure::Unauthenticated) => state.me.set(None),
+                Ok(me) => {
+                    state.online.set(true);
+                    offline::cache::remember_identity(&me).await;
+                    state.me.set(Some(me));
+                    // Anything queued from a previous session goes now.
+                    sync::start(state);
+                }
+                Err(ApiFailure::Unauthenticated) => {
+                    state.online.set(true);
+                    state.me.set(None);
+                }
+                Err(err) if err.is_offline() => {
+                    offline::net::report_unreachable(state);
+                    state.me.set(offline::cache::identity().await);
+                }
                 Err(err) => state.error(err.user_message()),
             }
             checked.set(true);
@@ -108,7 +132,15 @@ fn LoginScreen() -> impl IntoView {
             match api::login(username.get_untracked(), password.get_untracked()).await {
                 Ok(me) => {
                     password.set(String::new());
+                    state.online.set(true);
+                    // Wipes anything cached for a different account before
+                    // recording this one, so a shared machine never shows one
+                    // person the notes another left behind.
+                    offline::cache::remember_identity(&me).await;
                     state.me.set(Some(me));
+                    // A session that expired while offline leaves work queued;
+                    // signing back in is exactly when it should go.
+                    sync::start(state);
                 }
                 Err(ApiFailure::Unauthenticated) => {
                     // Deliberately does not say which of the two was wrong; the
@@ -127,6 +159,17 @@ fn LoginScreen() -> impl IntoView {
             <div class="gn-login-card">
                 <h1>"Go-Notes"</h1>
                 <p class="gn-sub">"Your notes, as markdown files you own."</p>
+
+                // Signing in needs the server; there is no local password to
+                // check against. Saying so is better than a failed login that
+                // looks like a wrong password.
+                <Show when=move || state.local_only()>
+                    <p class="gn-form-error">
+                        "The server cannot be reached from here. Signing in needs it, so this
+                         will work as soon as the connection is back. Notes cached on a device
+                         that is already signed in stay available in the meantime."
+                    </p>
+                </Show>
 
                 {move || {
                     error
@@ -195,13 +238,17 @@ fn Shell() -> impl IntoView {
     let state = use_app();
     install_shortcuts(state);
 
-    // Load the tree, and reload whenever something has changed it.
+    // Load the tree, and reload whenever something has changed it. Falls back to
+    // the copy this device holds when the server cannot be reached.
     Effect::new(move |_| {
         let _ = state.tree_epoch.get();
         spawn_local(async move {
-            match api::tree().await {
+            match vault::tree(state).await {
                 Ok(tree) => state.tree.set(Some(tree)),
                 Err(ApiFailure::Unauthenticated) => state.me.set(None),
+                Err(err) if err.is_offline() => state.error(
+                    "No local copy of the file list yet, and the server cannot be reached.",
+                ),
                 Err(err) => state.error(err.user_message()),
             }
         });
@@ -214,9 +261,7 @@ fn Shell() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            if let Ok(links) = api::backlinks(path).await {
-                state.backlinks.set(links);
-            }
+            state.backlinks.set(vault::backlinks(state, path).await);
         });
     });
 
@@ -238,6 +283,7 @@ fn Shell() -> impl IntoView {
     view! {
         <div class="gn-app">
             <TopBar />
+            <OfflineBanner />
 
             <aside class="gn-sidebar">
                 <div class="gn-pane-header">
@@ -362,104 +408,175 @@ fn Shell() -> impl IntoView {
 // Conflict resolution
 // ---------------------------------------------------------------------------
 
-/// Offered when a save loses its `If-Match` check.
+/// Offered when two versions of the same note disagree — because a save lost
+/// its `If-Match` check, or because a change made offline could not be replayed
+/// as it stood.
 ///
 /// The three choices matter: the whole point of detecting the conflict is to let
 /// a person decide, rather than picking a winner on their behalf and losing
-/// somebody's writing either way.
+/// somebody's writing either way. The diff is what makes that a decision rather
+/// than a guess — without it, "keep mine" and "use theirs" are two unlabelled
+/// buttons over an unknown amount of somebody's work.
 #[component]
 fn ConflictDialog() -> impl IntoView {
     let state = use_app();
+    let current = Memo::new(move |_| state.conflicts.get().first().cloned());
 
     view! {
-        <Show when=move || {
-            state
-                .conflict
-                .get()
-                .is_some_and(|conflict| {
-                    conflict.theirs != crate::components::editor_pane::TAKE_THEIRS_MARKER
-                })
-        }>
-            <div class="gn-overlay">
-                <div class="gn-dialog">
-                    <h2>"This note changed on disk"</h2>
-                    <p>
-                        "Someone — or something — edited this note after you opened it. That could be
-                        another browser tab, an edit over SSH, or a "
-                        <code>"git pull"</code>
-                        ". Nothing has been overwritten yet."
-                    </p>
-                    <div class="gn-dialog-actions">
-                        <button on:click=move |_| {
-                            let Some(conflict) = state.conflict.get_untracked() else { return };
-                            // Keep mine: save again against the hash the server
-                            // just told us about, which will now match.
-                            state.set_hash(&conflict.path, conflict.their_hash.clone());
-                            state.conflict.set(None);
-                            let path = conflict.path.clone();
-                            let mine = conflict.mine.clone();
-                            let hash = conflict.their_hash.clone();
-                            spawn_local(async move {
-                                match api::save_note(path.clone(), mine, hash).await {
-                                    Ok(response) => {
-                                        state.set_hash(&path, response.meta.content_hash.clone());
-                                        state.mark_dirty(&path, false);
-                                        state.notify("Kept your version.");
-                                        state.refresh_all();
-                                    }
-                                    Err(err) => state.error(err.user_message()),
-                                }
-                            });
-                        }>"Keep my version"</button>
+        {move || {
+            let Some(conflict) = current.get() else { return ().into_any() };
+            let waiting = state.conflicts.get().len();
+            let offline_origin = matches!(conflict.origin, crate::state::ConflictOrigin::Sync { .. });
 
-                        <button on:click=move |_| {
-                            let Some(conflict) = state.conflict.get_untracked() else { return };
-                            // The editor pane watches for this marker and reloads.
-                            state
-                                .conflict
-                                .set(Some(crate::state::Conflict {
-                                    theirs: crate::components::editor_pane::TAKE_THEIRS_MARKER
-                                        .to_string(),
-                                    ..conflict
-                                }));
-                        }>"Load the version on disk"</button>
+            let diff = diff_lines(&conflict.mine, &conflict.theirs);
+            let (mine_lines, their_lines) = change_counts(&diff);
+            let truncated = diff.len().saturating_sub(DIFF_ROWS);
 
-                        <button on:click=move |_| {
-                            let Some(conflict) = state.conflict.get_untracked() else { return };
-                            // Neither side wins: park a copy alongside so the
-                            // user can merge them at their leisure.
-                            state.conflict.set(None);
-                            let stem = go_notes_shared::paths::stem(&conflict.path);
-                            let parent = go_notes_shared::paths::parent_of(&conflict.path);
-                            let stamp = js_sys::Date::new_0().to_iso_string();
-                            let stamp: String = stamp
-                                .as_string()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(19)
-                                .map(|c| if c == ':' { '-' } else { c })
-                                .collect();
-                            let copy = go_notes_shared::paths::join(
-                                parent,
-                                &format!("{stem} (conflicted copy {stamp}).md"),
-                            );
-                            spawn_local(async move {
-                                match api::create_note(copy.clone(), conflict.mine).await {
-                                    Ok(response) => {
-                                        state.refresh_all();
-                                        state
-                                            .open_tab(
-                                                response.meta.path.clone(),
-                                                response.meta.title.clone(),
-                                            );
-                                        state.notify("Saved your version as a separate note.");
+            let for_mine = conflict.clone();
+            let for_theirs = conflict.clone();
+            let for_both = conflict.clone();
+
+            view! {
+                <div class="gn-overlay">
+                    <div class="gn-dialog gn-conflict-dialog">
+                        <h2>
+                            {if offline_origin {
+                                "This note also changed on the server"
+                            } else {
+                                "This note changed on disk"
+                            }}
+                        </h2>
+                        <p class="gn-conflict-path">{conflict.path.clone()}</p>
+                        <p>
+                            {if offline_origin {
+                                "You edited this note while offline, and it was edited on the server \
+                                 too. Nothing has been overwritten — the rest of your queued changes \
+                                 are waiting behind this decision."
+                            } else {
+                                "Someone — or something — edited this note after you opened it: \
+                                 another browser tab, an edit over SSH, or a git pull. Nothing has \
+                                 been overwritten yet."
+                            }}
+                        </p>
+
+                        <p class="gn-conflict-summary">
+                            {format!(
+                                "{mine_lines} line{} only in your version, {their_lines} line{} only on the server.",
+                                if mine_lines == 1 { "" } else { "s" },
+                                if their_lines == 1 { "" } else { "s" },
+                            )}
+                        </p>
+
+                        <div class="gn-diff">
+                            {diff
+                                .into_iter()
+                                .take(DIFF_ROWS)
+                                .map(|line| {
+                                    let (class, marker) = match line.kind {
+                                        DiffKind::Same => ("gn-diff-same", " "),
+                                        DiffKind::Mine => ("gn-diff-mine", "−"),
+                                        DiffKind::Theirs => ("gn-diff-theirs", "+"),
+                                    };
+                                    view! {
+                                        <div class=class>
+                                            <span class="gn-diff-marker">{marker}</span>
+                                            <span class="gn-diff-text">{line.text}</span>
+                                        </div>
                                     }
-                                    Err(err) => state.error(err.user_message()),
+                                })
+                                .collect_view()}
+                            {(truncated > 0)
+                                .then(|| {
+                                    view! {
+                                        <div class="gn-diff-more">
+                                            {format!("… {truncated} more lines")}
+                                        </div>
+                                    }
+                                })}
+                        </div>
+                        <p class="gn-diff-legend">
+                            <span class="gn-diff-mine">"− yours"</span>
+                            <span class="gn-diff-theirs">"+ on the server"</span>
+                        </p>
+
+                        <div class="gn-dialog-actions">
+                            <button on:click=move |_| sync::keep_mine(state, for_mine.clone())>
+                                "Keep my version"
+                            </button>
+                            <button on:click=move |_| sync::take_theirs(state, for_theirs.clone())>
+                                "Use the server's version"
+                            </button>
+                            <button on:click=move |_| sync::keep_both(state, for_both.clone())>
+                                "Keep both"
+                            </button>
+                        </div>
+
+                        {(waiting > 1)
+                            .then(|| {
+                                view! {
+                                    <p class="gn-dialog-note">
+                                        {format!("{} more to review after this one.", waiting - 1)}
+                                    </p>
                                 }
-                            });
-                        }>"Save mine alongside"</button>
+                            })}
                     </div>
                 </div>
+            }
+                .into_any()
+        }}
+    }
+}
+
+/// How much of a diff to render before summarising the rest. Enough to see a
+/// normal edit whole; short of the point where the dialog becomes a document
+/// viewer nobody scrolls.
+const DIFF_ROWS: usize = 200;
+
+// ---------------------------------------------------------------------------
+// Offline
+// ---------------------------------------------------------------------------
+
+/// The bar across the top when the server cannot be reached.
+///
+/// A toast would not do: toasts are for things that just happened, and being
+/// offline is a state that lasts. Someone who leaves a tab open on a train needs
+/// to be able to glance at the window and know that what they are typing is
+/// going into this device and nowhere else yet.
+#[component]
+fn OfflineBanner() -> impl IntoView {
+    let state = use_app();
+
+    view! {
+        <Show when=move || state.local_only() || state.sync_message.get().is_some()>
+            <div class="gn-offline-banner" role="status">
+                <span class="gn-offline-dot"></span>
+                {move || match state.sync_message.get() {
+                    Some(message) => view! { <span>{message}</span> }.into_any(),
+                    None => {
+                        let waiting = state.pending.get().len();
+                        let where_it_goes = if state.offline_storage.get() {
+                            " The server cannot be reached. What you write is being saved on this \
+                             device and will sync when it is back."
+                        } else {
+                            " The server cannot be reached, and this browser is not giving the app \
+                             any storage — what you write is only held while this tab stays open."
+                        };
+                        let queued = match waiting {
+                            0 => String::new(),
+                            1 => " 1 change is waiting to sync.".to_string(),
+                            count => format!(" {count} changes are waiting to sync."),
+                        };
+
+                        view! {
+                            <span>
+                                <strong>"Local only."</strong>
+                                {where_it_goes}
+                                {queued}
+                            </span>
+                        }
+                            .into_any()
+                    }
+                }}
             </div>
         </Show>
     }

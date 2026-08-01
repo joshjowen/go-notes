@@ -157,8 +157,23 @@ pub fn GraphView() -> impl IntoView {
                 };
                 match api::graph(scope, focus.as_deref(), depth_value).await {
                     Ok(data) => {
+                        crate::offline::net::report_reachable(state);
                         node_count.set(data.nodes.len());
                         scene.borrow_mut().load(data);
+                    }
+                    // The graph is the one view with no offline answer: it is
+                    // built from the link table for the *whole* vault, and this
+                    // device only holds the notes it has opened. A partial graph
+                    // would not be a smaller truth, it would be a wrong one —
+                    // notes shown as unlinked because their neighbours are
+                    // simply not here.
+                    Err(err) if err.is_offline() => {
+                        crate::offline::net::report_unreachable(state);
+                        node_count.set(0);
+                        scene.borrow_mut().load(go_notes_shared::GraphResponse {
+                            nodes: Vec::new(),
+                            edges: Vec::new(),
+                        });
                     }
                     Err(err) => state.error(err.user_message()),
                 }
@@ -397,6 +412,8 @@ pub fn GraphView() -> impl IntoView {
                     {move || {
                         if loading.get() {
                             "Loading…".to_string()
+                        } else if state.local_only() {
+                            "Needs the server".to_string()
                         } else {
                             let count = node_count.get();
                             format!("{count} note{}", if count == 1 { "" } else { "s" })
@@ -407,7 +424,14 @@ pub fn GraphView() -> impl IntoView {
                 // Canvas interactions are invisible until someone tries them, so
                 // say what they are rather than leaving people to guess.
                 <span class="gn-graph-hint">
-                    "Drag to pan · Scroll to zoom · Click a note to open it"
+                    {move || {
+                        if state.local_only() {
+                            "The link graph is built by the server from the whole vault, so it is \
+                             unavailable offline. Editing, search and backlinks still work."
+                        } else {
+                            "Drag to pan · Scroll to zoom · Click a note to open it"
+                        }
+                    }}
                 </span>
             </div>
         </div>

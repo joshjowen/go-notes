@@ -18,6 +18,15 @@
     <link rel="stylesheet" href="/editor-bridge.css" />
     <script src="/editor-bridge.js"></script>
 
+    <!--
+      The service worker that caches the application shell, so reloading with
+      no connection starts the app rather than the browser's error page. Copied
+      to the bundle root because a worker's scope cannot be broader than the
+      path it is served from, and this one has to cover every route.
+      Registration happens from Rust, in offline::register_service_worker.
+    -->
+    <link data-trunk rel="copy-file" href="sw.js" />
+
     <link data-trunk rel="css" href="styles.css" />
     <!--
       The feature flags are not optional. Recent rustc emits post-MVP

@@ -9,8 +9,8 @@ use go_notes_shared::{paths, TreeNode};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::api;
 use crate::state::{title_of, use_app, AppState};
+use crate::vault;
 
 /// Where a context menu is open, and on what.
 #[derive(Debug, Clone, PartialEq)]
@@ -137,7 +137,7 @@ fn TreeEntry(
                             open.set(next);
                             let path = toggle_path.clone();
                             spawn_local(async move {
-                                let _ = api::set_folder_collapsed(path, !next).await;
+                                vault::set_folder_collapsed(state, path, !next).await;
                             });
                         }
                         on:contextmenu=move |ev| {
@@ -321,7 +321,7 @@ fn prompt(message: &str, default: &str) -> Option<String> {
     }
 }
 
-fn confirm(message: &str) -> bool {
+pub fn confirm(message: &str) -> bool {
     web_sys::window()
         .and_then(|window| window.confirm_with_message(message).ok())
         .unwrap_or(false)
@@ -340,10 +340,14 @@ pub fn create_note_in(state: AppState, folder: &str) {
 
     let path = paths::join(folder, &format!("{name}.md"));
     spawn_local(async move {
-        match api::create_note(path.clone(), format!("# {}\n\n", title_of(&path))).await {
-            Ok(response) => {
+        let markdown = format!("# {}\n\n", title_of(&path));
+        match vault::create_note(state, path.clone(), markdown).await {
+            Ok(written) => {
                 state.refresh_all();
-                state.open_tab(response.meta.path.clone(), response.meta.title.clone());
+                state.open_tab(written.path.clone(), written.title.clone());
+                if written.queued {
+                    state.notify("Created on this device. It will reach the server when the connection is back.");
+                }
             }
             Err(err) => state.error(err.user_message()),
         }
@@ -361,8 +365,8 @@ pub fn create_folder_in(state: AppState, parent: &str) {
 
     let path = paths::join(parent, &name);
     spawn_local(async move {
-        match api::create_folder(path).await {
-            Ok(()) => state.refresh_tree(),
+        match vault::create_folder(state, path).await {
+            Ok(_) => state.refresh_tree(),
             Err(err) => state.error(err.user_message()),
         }
     });
@@ -411,25 +415,24 @@ fn move_entry_inner(state: AppState, from: String, to: String, is_folder: bool) 
     }
     spawn_local(async move {
         let result = if is_folder {
-            api::move_folder(from.clone(), to.clone()).await
+            vault::move_folder(state, from.clone(), to.clone()).await
         } else {
-            api::move_note(from.clone(), to.clone()).await
+            vault::move_note(state, from.clone(), to.clone()).await
         };
 
         match result {
-            Ok(response) => {
-                state.rename_tab(&from, &response.to);
+            Ok((moved_to, links_rewritten)) => {
+                state.rename_tab(&from, &moved_to);
                 state.refresh_all();
-                if response.links_rewritten > 0 {
-                    let plural = if response.links_rewritten == 1 {
-                        "note"
-                    } else {
-                        "notes"
-                    };
-                    state.notify(format!(
-                        "Moved. Updated links in {} {plural}.",
-                        response.links_rewritten
-                    ));
+                if links_rewritten > 0 {
+                    let plural = if links_rewritten == 1 { "note" } else { "notes" };
+                    state.notify(format!("Moved. Updated links in {links_rewritten} {plural}."));
+                } else if state.local_only() {
+                    // Offline the rename happens here and the links are left
+                    // alone; the server rewrites them when the move is replayed,
+                    // which is worth saying rather than leaving someone to
+                    // wonder why their links did not follow.
+                    state.notify("Moved on this device. Links elsewhere are rewritten when this syncs.");
                 } else {
                     state.notify("Moved.");
                 }
@@ -450,16 +453,20 @@ fn delete_entry(state: AppState, path: &str, is_folder: bool) {
     let path = path.to_string();
     spawn_local(async move {
         let result = if is_folder {
-            api::delete_folder(path.clone()).await
+            vault::delete_folder(state, path.clone()).await
         } else {
-            api::delete_note(path.clone()).await
+            vault::delete_note(state, path.clone()).await
         };
 
         match result {
-            Ok(()) => {
+            Ok(queued) => {
                 state.close_tabs_under(&path);
                 state.refresh_all();
-                state.notify("Moved to trash.");
+                state.notify(if queued {
+                    "Removed here. It goes to the vault's trash when this syncs."
+                } else {
+                    "Moved to trash."
+                });
             }
             Err(err) => state.error(err.user_message()),
         }
