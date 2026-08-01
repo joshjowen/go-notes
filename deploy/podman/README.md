@@ -22,7 +22,7 @@ cp deploy/caddy/Caddyfile            ~/.config/go-notes/Caddyfile   # if using C
 printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" > ~/.config/go-notes/postgres.env
 cat > ~/.config/go-notes/go-notes.env <<'EOF'
 GO_NOTES__SERVER__PUBLIC_URL=https://notes.example.com
-DATABASE_URL=postgres://go-notes:PASTE_THE_SAME_PASSWORD@go-notes-postgres:5432/go-notes
+DATABASE_URL=postgres://go_notes:PASTE_THE_SAME_PASSWORD@go-notes-postgres:5432/go_notes
 EOF
 chmod 600 ~/.config/go-notes/*.env
 
