@@ -13,6 +13,87 @@
   overflow-y: auto;
 }
 
+/* ---------------------------------------------------------------- tokens */
+
+/*
+ * Crepe's stylesheets are written against a palette of `--crepe-*` tokens that
+ * only its *theme* files declare — and index.ts imports none of them, because
+ * the aggregate theme drags in 1.4 MB of base64 KaTeX fonts. Nothing warns
+ * about this: an undeclared token makes each declaration that references it
+ * invalid at computed-value time, so the property silently falls back to its
+ * initial value rather than to anything sensible.
+ *
+ * That is mostly invisible, since the rules below restate the things that
+ * matter in `--gn-*` terms. But it is not harmless: it left the text caret with
+ * `border-left-style: none` and the selection highlight with a transparent
+ * background, so you could neither see where you were typing nor what you had
+ * selected. Declaring the palette here fixes those at the source, and any other
+ * Crepe surface — the slash menu, the code-block panel — comes out themed for
+ * free instead of falling back to browser defaults.
+ */
+.milkdown {
+  --crepe-color-background: var(--gn-bg);
+  --crepe-color-on-background: var(--gn-text);
+  --crepe-color-surface: var(--gn-bg-secondary);
+  --crepe-color-surface-low: var(--gn-bg-tertiary);
+  --crepe-color-on-surface: var(--gn-text);
+  --crepe-color-on-surface-variant: var(--gn-text-muted);
+  /* Despite the name, Crepe fills icons with this as well as drawing borders in
+     it — the toolbar's bold and italic glyphs are `--crepe-color-outline`. A
+     border grey is too faint to read as an icon, and the border uses nearly all
+     go through `color-mix(…, transparent 80%)`, so a foreground grey suits both. */
+  --crepe-color-outline: var(--gn-text-muted);
+  --crepe-color-primary: var(--gn-accent);
+  --crepe-color-secondary: var(--gn-bg-tertiary);
+  --crepe-color-on-secondary: var(--gn-text);
+  --crepe-color-inverse: var(--gn-text);
+  --crepe-color-on-inverse: var(--gn-bg);
+  --crepe-color-hover: var(--gn-bg-hover);
+  --crepe-color-selected: color-mix(in srgb, var(--gn-accent) 30%, transparent);
+  --crepe-color-inline-code: var(--gn-text);
+  --crepe-color-inline-area: var(--gn-bg-code);
+
+  --crepe-font-default: var(--gn-font-text);
+  --crepe-font-title: var(--gn-font-text);
+  --crepe-font-code: var(--gn-font-mono);
+
+  --crepe-shadow-1: var(--gn-shadow);
+  --crepe-shadow-2: var(--gn-shadow);
+}
+
+/* The caret is drawn by Crepe's virtual-cursor plugin, which hides the native
+   one outright — so if its colour does not resolve, there is no caret at all
+   rather than a differently-coloured one. Crepe points it at
+   `--crepe-color-outline`, the same muted grey as its icons; a caret should be
+   as legible as the text it sits in, so it gets the full text colour instead. */
+.milkdown .ProseMirror-focused {
+  --prosemirror-virtual-cursor-color: var(--gn-text);
+}
+
+/* The placeholder is a prompt, not content. Crepe renders it at 40% of the text
+   colour, which is still solid enough to read as a line someone typed and left
+   there — so it is taken down to the palette's faint grey and lightened again
+   from there, putting it clearly below body text without becoming invisible. */
+.milkdown .crepe-placeholder::before {
+  color: color-mix(in srgb, var(--gn-text-faint) 70%, transparent);
+}
+
+/* Milkdown sizes `.milkdown` to its content, so on a note shorter than the
+   window the editable surface stopped partway down and the rest of the pane was
+   dead: clicking it focused nothing and the pointer stayed an arrow. Stretching
+   ProseMirror to fill the scroll container makes the whole pane a click target.
+   Every other child of `.milkdown` is absolutely positioned, so the flex
+   container has exactly one item to lay out. */
+.gn-editor-wysiwyg .milkdown {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.gn-editor-wysiwyg .milkdown > .ProseMirror {
+  flex: 1 1 auto;
+}
+
 /* ------------------------------------------------------------------ links */
 
 .gn-wikilink {
@@ -108,6 +189,9 @@
      bottom edge of the window while typing. */
   font-family: var(--gn-font-text);
   line-height: 1.6;
+  /* `auto` resolves to an arrow anywhere there is no text under the pointer,
+     which is most of the surface on a short note. Text is what this is. */
+  cursor: text;
 }
 
 .milkdown .ProseMirror h1,
