@@ -1,7 +1,7 @@
 //! Theme definitions, DOM application, and persistence.
 //!
 //! A theme is a flat set of colours mapped onto the `--gn-*` custom properties
-//! declared in `styles.css`. Three are built in; a fourth, "Custom", is
+//! declared in `styles.css`. Several are built in; one more, "Custom", is
 //! whatever the user has picked in the theme editor and lives in
 //! `localStorage` rather than being compiled in. Applying a theme means
 //! setting those properties as inline styles on `<html>` — inline style beats
@@ -23,7 +23,7 @@ const THEME_ID_KEY: &str = "go-notes-theme-id";
 const CUSTOM_COLORS_KEY: &str = "go-notes-custom-colors";
 const CUSTOM_CSS_KEY: &str = "go-notes-custom-css";
 /// Pre-dates the theme editor; a plain "light"/"dark" choice with no room for
-/// a third theme. Read once, on first load, so upgrading does not reset
+/// any other theme. Read once, on first load, so upgrading does not reset
 /// anyone's preference.
 const LEGACY_THEME_KEY: &str = "go-notes-theme";
 const CUSTOM_CSS_ELEMENT_ID: &str = "gn-custom-css";
@@ -33,14 +33,20 @@ pub enum ThemeId {
     DefaultDark,
     DefaultLight,
     KanagawaBones,
+    RosePine,
+    Everforest,
+    Nightfox,
     Custom,
 }
 
 impl ThemeId {
-    pub const BUILT_IN: [ThemeId; 3] = [
+    pub const BUILT_IN: [ThemeId; 6] = [
         ThemeId::DefaultDark,
         ThemeId::DefaultLight,
         ThemeId::KanagawaBones,
+        ThemeId::RosePine,
+        ThemeId::Everforest,
+        ThemeId::Nightfox,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -48,6 +54,9 @@ impl ThemeId {
             ThemeId::DefaultDark => "default-dark",
             ThemeId::DefaultLight => "default-light",
             ThemeId::KanagawaBones => "kanagawabones",
+            ThemeId::RosePine => "rose-pine",
+            ThemeId::Everforest => "everforest",
+            ThemeId::Nightfox => "nightfox",
             ThemeId::Custom => "custom",
         }
     }
@@ -57,6 +66,9 @@ impl ThemeId {
             "default-dark" => Some(ThemeId::DefaultDark),
             "default-light" => Some(ThemeId::DefaultLight),
             "kanagawabones" => Some(ThemeId::KanagawaBones),
+            "rose-pine" => Some(ThemeId::RosePine),
+            "everforest" => Some(ThemeId::Everforest),
+            "nightfox" => Some(ThemeId::Nightfox),
             "custom" => Some(ThemeId::Custom),
             _ => None,
         }
@@ -67,6 +79,12 @@ impl ThemeId {
             ThemeId::DefaultDark => "Default Dark",
             ThemeId::DefaultLight => "Default Light",
             ThemeId::KanagawaBones => "Kanagawa Bones",
+            // Each of these ships several variants upstream; the name says which
+            // one this is, so picking a different variant later can be a new
+            // entry rather than a silent change under someone's feet.
+            ThemeId::RosePine => "Rosé Pine",
+            ThemeId::Everforest => "Everforest Dark",
+            ThemeId::Nightfox => "Nightfox",
             ThemeId::Custom => "Custom",
         }
     }
@@ -78,6 +96,9 @@ impl ThemeId {
             ThemeId::DefaultDark => ThemeColors::default_dark(),
             ThemeId::DefaultLight => ThemeColors::default_light(),
             ThemeId::KanagawaBones => ThemeColors::kanagawabones(),
+            ThemeId::RosePine => ThemeColors::rose_pine(),
+            ThemeId::Everforest => ThemeColors::everforest(),
+            ThemeId::Nightfox => ThemeColors::nightfox(),
             ThemeId::Custom => return None,
         })
     }
@@ -178,6 +199,80 @@ impl ThemeColors {
             unresolved: "#e46a78".into(),
             danger: "#e46a78".into(),
             success: "#98bc6d".into(),
+        }
+    }
+
+    /// Rosé Pine, the `main` (dark) variant — `base` through `overlay` for the
+    /// surfaces, `iris` for the accent.
+    ///
+    /// The palette has no neutral brighter than `text`, so headings take `rose`
+    /// rather than a lighter grey. That is how the upstream editor themes
+    /// colour markdown headings too, and it keeps the theme recognisable.
+    pub fn rose_pine() -> ThemeColors {
+        ThemeColors {
+            dark: true,
+            bg: "#191724".into(), // base
+            bg_secondary: "#1f1d2e".into(), // surface
+            bg_tertiary: "#26233a".into(), // overlay
+            bg_float: "#1f1d2e".into(), // surface
+            text: "#e0def4".into(), // text
+            text_muted: "#908caa".into(), // subtle
+            text_faint: "#6e6a86".into(), // muted
+            heading: "#ebbcba".into(), // rose
+            border: "#403d52".into(), // highlight med
+            border_strong: "#524f67".into(), // highlight high
+            accent: "#c4a7e7".into(), // iris
+            accent_hover: "#d5bef0".into(), // iris, lifted
+            unresolved: "#eb6f92".into(), // love
+            danger: "#eb6f92".into(), // love
+            success: "#9ccfd8".into(), // foam — the palette has no green
+        }
+    }
+
+    /// Everforest, the dark/medium variant — `bg0`–`bg5` for the surfaces,
+    /// `green` for the accent and `yellow` for headings.
+    pub fn everforest() -> ThemeColors {
+        ThemeColors {
+            dark: true,
+            bg: "#2d353b".into(), // bg0
+            bg_secondary: "#343f44".into(), // bg1
+            bg_tertiary: "#3d484d".into(), // bg2
+            bg_float: "#343f44".into(), // bg1
+            text: "#d3c6aa".into(), // fg
+            text_muted: "#9da9a0".into(), // grey2
+            text_faint: "#7a8478".into(), // grey0
+            heading: "#dbbc7f".into(), // yellow
+            border: "#475258".into(), // bg3
+            border_strong: "#56635f".into(), // bg5
+            accent: "#a7c080".into(), // green
+            accent_hover: "#bcd398".into(), // green, lifted
+            unresolved: "#e67e80".into(), // red
+            danger: "#e67e80".into(), // red
+            success: "#83c092".into(), // aqua
+        }
+    }
+
+    /// Nightfox, the namesake variant of nightfox.nvim — `bg1`–`bg3` for the
+    /// surfaces, `blue` for the accent. This palette does carry a neutral
+    /// brighter than the body text, so headings use it rather than an accent.
+    pub fn nightfox() -> ThemeColors {
+        ThemeColors {
+            dark: true,
+            bg: "#192330".into(), // bg1
+            bg_secondary: "#212e3f".into(), // bg2
+            bg_tertiary: "#29394f".into(), // bg3
+            bg_float: "#212e3f".into(), // bg2
+            text: "#cdcecf".into(), // fg1
+            text_muted: "#aeafb0".into(), // fg2
+            text_faint: "#738091".into(), // comment
+            heading: "#dfdfe0".into(), // white
+            border: "#2b3b51".into(), // sel0
+            border_strong: "#3c5372".into(), // sel1
+            accent: "#719cd6".into(), // blue
+            accent_hover: "#8db4e3".into(), // blue, lifted
+            unresolved: "#c94f6d".into(), // red
+            danger: "#c94f6d".into(), // red
+            success: "#81b29a".into(), // green
         }
     }
 }
@@ -334,5 +429,40 @@ fn local_storage_get(key: &str) -> Option<String> {
 fn local_storage_set(key: &str, value: &str) {
     if let Some(storage) = local_storage() {
         let _ = storage.set_item(key, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `colors`, `as_str` and `name` are exhaustive `match`es, so the compiler
+    /// catches a forgotten arm when a theme is added. `from_str` maps the other
+    /// way and is not checked: a missing arm there silently drops someone's
+    /// saved theme back to the default on their next visit.
+    #[test]
+    fn every_built_in_theme_round_trips_through_storage() {
+        for id in ThemeId::BUILT_IN {
+            assert_eq!(
+                ThemeId::from_str(id.as_str()),
+                Some(id),
+                "{} does not round-trip",
+                id.name()
+            );
+            assert!(id.colors().is_some(), "{} has no colours", id.name());
+        }
+        assert_eq!(ThemeId::from_str("custom"), Some(ThemeId::Custom));
+        assert_eq!(ThemeId::from_str("nonsense"), None);
+    }
+
+    /// Two themes sharing a storage key would make one unselectable.
+    #[test]
+    fn theme_storage_keys_are_distinct() {
+        let mut keys: Vec<&str> = ThemeId::BUILT_IN.iter().map(|id| id.as_str()).collect();
+        keys.push(ThemeId::Custom.as_str());
+        let count = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "duplicate theme id: {keys:?}");
     }
 }
