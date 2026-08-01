@@ -2,6 +2,8 @@
 
 A self-hosted, Obsidian-like notes application. Written in Rust, front to back.
 
+Heavily written by Claude code using Spec. Driven Development methods.
+
 Your notes are **ordinary markdown files on the server's filesystem**. Postgres
 holds a derived index — the link graph, tags, full-text search — and can be
 thrown away and rebuilt from the files at any time. The editor is rich-text by
