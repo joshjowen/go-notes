@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
     environment:
       GO_NOTES__SERVER__PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
-      DATABASE_URL: postgres://go_notes:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/go-notes
+      DATABASE_URL: postgres://go_notes:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/go_notes
 
       # Authelia is the primary way in.
       GO_NOTES__AUTH__OIDC__ENABLED: "true"

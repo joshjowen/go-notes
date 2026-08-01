@@ -6,6 +6,7 @@ use go_notes_shared::{Backlink, Me, TreeNode};
 use leptos::prelude::*;
 
 use crate::editor::EditorMode;
+use crate::theme::{ThemeColors, ThemeId};
 
 /// A note open in a tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,28 +47,6 @@ pub enum Palette {
     Commands,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Dark,
-    Light,
-}
-
-impl Theme {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Theme::Dark => "dark",
-            Theme::Light => "light",
-        }
-    }
-
-    pub fn toggled(self) -> Theme {
-        match self {
-            Theme::Dark => Theme::Light,
-            Theme::Light => Theme::Dark,
-        }
-    }
-}
-
 /// A transient message shown in the corner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
@@ -106,7 +85,10 @@ pub struct AppState {
     pub right_panel: RwSignal<RightPanel>,
     pub main_view: RwSignal<MainView>,
     pub palette: RwSignal<Option<Palette>>,
-    pub theme: RwSignal<Theme>,
+    pub theme_id: RwSignal<ThemeId>,
+    pub custom_colors: RwSignal<ThemeColors>,
+    pub custom_css: RwSignal<String>,
+    pub theme_dialog_open: RwSignal<bool>,
     pub editor_mode: RwSignal<EditorMode>,
     pub toast: RwSignal<Option<Toast>>,
     pub conflict: RwSignal<Option<Conflict>>,
@@ -140,7 +122,10 @@ impl AppState {
             right_panel: RwSignal::new(RightPanel::Backlinks),
             main_view: RwSignal::new(MainView::Editor),
             palette: RwSignal::new(None),
-            theme: RwSignal::new(Theme::Dark),
+            theme_id: RwSignal::new(ThemeId::DefaultDark),
+            custom_colors: RwSignal::new(ThemeColors::default_dark()),
+            custom_css: RwSignal::new(String::new()),
+            theme_dialog_open: RwSignal::new(false),
             editor_mode: RwSignal::new(EditorMode::Wysiwyg),
             toast: RwSignal::new(None),
             conflict: RwSignal::new(None),

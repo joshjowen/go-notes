@@ -104,7 +104,7 @@ impl Default for Config {
                 trust_proxy_headers: true,
             },
             database: DatabaseConfig {
-                url: "postgres://go_notes:go_notes@localhost/go-notes".into(),
+                url: "postgres://go_notes:go_notes@localhost/go_notes".into(),
                 max_connections: 10,
                 connect_timeout_secs: 60,
             },

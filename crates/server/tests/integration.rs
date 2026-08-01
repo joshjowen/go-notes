@@ -12,7 +12,7 @@
 //!   -e POSTGRES_USER=go_notes -e POSTGRES_PASSWORD=go_notes -e POSTGRES_DB=go_notes \
 //!   -p 55432:5432 docker.io/library/postgres:17-alpine
 //!
-//! DATABASE_URL=postgres://go_notes:go_notes@127.0.0.1:55432/go-notes \
+//! DATABASE_URL=postgres://go_notes:go_notes@127.0.0.1:55432/go_notes \
 //!   cargo test -p go-notes-server --features integration
 //! ```
 //!

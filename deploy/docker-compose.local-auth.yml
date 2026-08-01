@@ -3,7 +3,7 @@
 #   podman compose -f deploy/docker-compose.local-auth.yml up --build
 #
 # Then create an account:
-#   podman exec -it go-notes-go-notes-1 go-notes user add josh
+#   podman exec -it go-notes go-notes user add josh
 #
 # and open http://localhost:8080.
 #
@@ -23,6 +23,11 @@ services:
       dockerfile: Dockerfile
     image: go-notes:latest
     restart: unless-stopped
+    # Named explicitly because the generated name is not the same everywhere:
+    # Docker Compose builds `go-notes-go-notes-1`, podman-compose builds
+    # `go-notes_go-notes_1`. Pinning it means the `podman exec` line above works
+    # under both.
+    container_name: go-notes
     ports:
       - "8080:8080"
     environment:
@@ -43,7 +48,8 @@ services:
       GO_NOTES__AUTH__LOCAL__ENABLED: "true"
       GO_NOTES__AUTH__OIDC__ENABLED: "false"
 
-      DATABASE_URL: postgres://go_notes:go_notes@postgres:5432/go-notes
+      # Role, password and database name must match the postgres service below.
+      DATABASE_URL: postgres://go_notes:go_notes@postgres:5432/go_notes
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ${NOTES_DIR:-./data/notes}:/data/notes:z
@@ -74,9 +80,12 @@ services:
   postgres:
     image: docker.io/library/postgres:17-alpine
     restart: unless-stopped
+    container_name: go-notes-postgres
     environment:
       POSTGRES_USER: go_notes
-      POSTGRES_PASSWORD: go-notes
+      # Fine to hard-code: this service publishes no ports and is reachable only
+      # on the internal network. The production compose file takes it from .env.
+      POSTGRES_PASSWORD: go_notes
       POSTGRES_DB: go_notes
     volumes:
       - pgdata:/var/lib/postgresql/data

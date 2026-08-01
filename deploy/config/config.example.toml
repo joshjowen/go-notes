@@ -32,7 +32,7 @@ reconcile_on_start = true
 trust_proxy_headers = true
 
 [database]
-url = "postgres://go_notes:go_notes@postgres:5432/go-notes"
+url = "postgres://go_notes:go_notes@postgres:5432/go_notes"
 max_connections = 10
 
 # Containers start before Postgres is ready to answer. Retrying here rather than

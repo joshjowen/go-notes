@@ -8,6 +8,7 @@ mod app;
 mod components;
 mod editor;
 mod state;
+mod theme;
 
 fn main() {
     // Turns a Rust panic into a readable browser console trace instead of the

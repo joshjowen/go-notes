@@ -5,5 +5,6 @@ pub mod force;
 pub mod graph;
 pub mod palette;
 pub mod panels;
+pub mod theme_editor;
 pub mod topbar;
 pub mod tree;

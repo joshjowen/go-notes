@@ -230,17 +230,36 @@ pub fn user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Whether an asset's name contains a content hash, and may therefore be cached
+/// forever.
+///
+/// Trunk fingerprints what it generates as `name-<16 hex digits>.ext`. It does
+/// *not* fingerprint files copied through verbatim, and `editor-bridge.js` and
+/// its stylesheet are copied — `index.html` links them under those fixed names.
+/// Testing merely for a hyphen therefore caught them too, pinning the editor
+/// bundle in every returning browser for a year: an editor fix shipped in a new
+/// release would never be seen without a manual cache clear.
+fn is_fingerprinted(path: &str) -> bool {
+    let Some((stem, _extension)) = path.rsplit_once('.') else {
+        return false;
+    };
+    let Some((_name, hash)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Serves the embedded frontend, falling back to `index.html` for client-side
 /// routes so that reloading on `/note/Projects/A.md` works.
 pub async fn serve_frontend(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
-    // A real file: serve it with a long cache lifetime, which is safe because
-    // Trunk fingerprints asset filenames.
+    // A real file: cache it forever only if its name carries a content hash, so
+    // that shipping a new build actually replaces what the browser holds.
     if !path.is_empty() {
         if let Some(asset) = Assets::get(path) {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            let cacheable = path.contains('-') && !path.ends_with(".html");
+            let cacheable = is_fingerprinted(path) && !path.ends_with(".html");
             return (
                 [
                     (header::CONTENT_TYPE, mime.as_ref().to_string()),
@@ -310,4 +329,27 @@ pub fn no_content() -> Response {
         .status(StatusCode::NO_CONTENT)
         .body(Body::empty())
         .expect("building an empty response cannot fail")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caches_only_hashed_asset_names_forever() {
+        // What Trunk fingerprints.
+        assert!(is_fingerprinted("go-notes-ui-ccfb7b424d5a1f48.js"));
+        assert!(is_fingerprinted("styles-1d8abe2cdabc1247.css"));
+
+        // What it copies through under a fixed name. These contain a hyphen, so
+        // they were previously cached as immutable and a new editor build could
+        // not reach a browser that had already loaded one.
+        assert!(!is_fingerprinted("editor-bridge.js"));
+        assert!(!is_fingerprinted("editor-bridge.css"));
+
+        assert!(!is_fingerprinted("index.html"));
+        assert!(!is_fingerprinted("favicon.ico"));
+        // A hyphenated tail that is the right length but not hex.
+        assert!(!is_fingerprinted("some-notquiteahashzz.js"));
+    }
 }

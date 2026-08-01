@@ -170,6 +170,19 @@ export const wikiLinkInputRule = $inputRule((ctx) =>
 
 const AUTOCOMPLETE_KEY = new PluginKey('go-notes-wikilink-autocomplete')
 
+/** How far back along the current paragraph to look for an opening `[[`. */
+const LOOKBEHIND = 200
+
+/**
+ * Stands in for an inline leaf — an existing link pill, an inline image — while
+ * scanning text.
+ *
+ * It has to be exactly one character: a leaf occupies exactly one position in
+ * the document, so any other length would put the scanned string and the
+ * document out of step, which is the whole bug this constant exists to avoid.
+ */
+const LEAF_PLACEHOLDER = '￼'
+
 /**
  * The autocomplete popup.
  *
@@ -297,8 +310,28 @@ export const wikiLinkAutocomplete = $prose(() => {
         }
 
         // Look back along the current text block for an unclosed `[[`.
-        const from = Math.max(0, selection.from - 200)
-        const text = view.state.doc.textBetween(from, selection.from, '\n', '\n')
+        //
+        // Scanning is done in the parent block's own offsets rather than in
+        // document positions, and converted once at the end. An index into a
+        // string from `doc.textBetween` is *not* a document position: it renders
+        // each block boundary as a single separator where the document spends
+        // two positions, and it starts inside the first block rather than at the
+        // position asked for. Adding such an index to a document position drifts
+        // by one for every block above the cursor — which quietly ate the
+        // characters before `[[` when the link was inserted.
+        const { $from } = selection
+        if (!$from.parent.isTextblock) {
+          close()
+          return
+        }
+
+        const sliceFrom = Math.max(0, $from.parentOffset - LOOKBEHIND)
+        const text = $from.parent.textBetween(
+          sliceFrom,
+          $from.parentOffset,
+          undefined,
+          LEAF_PLACEHOLDER
+        )
         const open = text.lastIndexOf('[[')
 
         if (open < 0) {
@@ -306,13 +339,20 @@ export const wikiLinkAutocomplete = $prose(() => {
           return
         }
         const query = text.slice(open + 2)
-        // A newline or a closing bracket means this `[[` is not what we are in.
-        if (query.includes('\n') || query.includes(']]') || query.includes('[')) {
+        // A closing bracket, a further `[`, or a leaf in the way means this `[[`
+        // is not an open query we should be completing.
+        if (
+          query.includes(']]') ||
+          query.includes('[') ||
+          query.includes(LEAF_PLACEHOLDER)
+        ) {
           close()
           return
         }
 
-        queryFrom = from + open
+        // `$from.start()` is the document position of the block's first
+        // character, so offsets within the block convert by simple addition.
+        queryFrom = $from.start() + sliceFrom + open
         const token = ++latestQuery
 
         void hooks.onQuery(query).then((results) => {

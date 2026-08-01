@@ -14,14 +14,13 @@ use leptos::task::spawn_local;
 
 use crate::api;
 use crate::components::tree::create_note_in;
-use crate::state::{use_app, LeftPanel, MainView, Palette, RightPanel, Theme};
+use crate::state::{use_app, LeftPanel, MainView, Palette, RightPanel};
 
 #[component]
 pub fn TopBar() -> impl IntoView {
     let state = use_app();
 
     let in_graph = move || state.main_view.get() == MainView::Graph;
-    let is_dark = move || state.theme.get() == Theme::Dark;
 
     view! {
         <header class="gn-topbar">
@@ -107,17 +106,11 @@ pub fn TopBar() -> impl IntoView {
 
                 <button
                     class="gn-tool-button"
-                    title=move || {
-                        if is_dark() { "Switch to light mode" } else { "Switch to dark mode" }
-                    }
-                    on:click=move |_| state.theme.update(|theme| *theme = theme.toggled())
+                    title="Theme"
+                    on:click=move |_| state.theme_dialog_open.set(true)
                 >
-                    // The icon shows what you would get, not what you have —
-                    // a sun on a dark background means "click for light".
-                    <span class="gn-tool-icon">{move || if is_dark() { "☀" } else { "☾" }}</span>
-                    <span class="gn-tool-label">
-                        {move || if is_dark() { "Light" } else { "Dark" }}
-                    </span>
+                    <span class="gn-tool-icon">"🎨"</span>
+                    <span class="gn-tool-label">"Theme"</span>
                 </button>
 
                 <button

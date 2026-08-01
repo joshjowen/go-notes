@@ -86,15 +86,16 @@ Everything comes back — notes, links, tags, search, the graph.
 The smallest thing that works: no domain, no certificates, no identity provider.
 
 ```sh
-git clone <this repo> && cd go-notes
+git clone https://github.com/joshjowen/go-notes && cd go-notes
 podman compose -f deploy/docker-compose.local-auth.yml up --build
 
 # In another terminal, create an account:
-podman exec -it go-notes-go-notes-1 go-notes user add josh
+podman exec -it go-notes go-notes user add josh
 ```
 
-Open <http://localhost:8080>. Your notes appear in `./data/notes/josh/` as
-markdown files.
+Open <http://localhost:8080>. Your notes appear in `deploy/data/notes/josh/` as
+markdown files — compose resolves the relative path against the compose file, so
+set `NOTES_DIR` in `deploy/.env` to put the vault somewhere you have chosen.
 
 `docker compose` works identically.
 

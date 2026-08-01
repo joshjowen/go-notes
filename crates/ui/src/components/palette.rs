@@ -243,8 +243,8 @@ fn commands() -> Vec<Row> {
         row("Toggle rich text / markdown", "", |state| {
             state.editor_mode.update(|mode| *mode = mode.toggled())
         }),
-        row("Toggle light / dark theme", "", |state| {
-            state.theme.update(|theme| *theme = theme.toggled())
+        row("Theme…", "", |state| {
+            state.theme_dialog_open.set(true);
         }),
         row("Toggle backlinks panel", "", |state| {
             state
