@@ -131,6 +131,12 @@ pub struct AppState {
     /// Bumped when the open note should be re-read from the vault — after a
     /// sync, or when the user chooses the server's version of a conflict.
     pub reload_requested: RwSignal<u32>,
+    /// The browser has offered to install the app, and the offer is being held
+    /// until the user asks for it.
+    pub installable: RwSignal<bool>,
+    /// The file tree drawer, which is only a drawer on a narrow screen. On a
+    /// wide one the sidebar is always there and this is ignored.
+    pub drawer_open: RwSignal<bool>,
     /// Bumped whenever the tree needs refetching.
     pub tree_epoch: RwSignal<u32>,
     /// Bumped whenever the graph needs refetching.
@@ -158,7 +164,14 @@ impl AppState {
             backlinks: RwSignal::new(Vec::new()),
             active_markdown: RwSignal::new(String::new()),
             left_panel: RwSignal::new(LeftPanel::Files),
-            right_panel: RwSignal::new(RightPanel::Backlinks),
+            // Backlinks are a side panel on a desktop and a whole screen on a
+            // phone, so a narrow window starts without one rather than opening
+            // on a note squeezed into a third of the width.
+            right_panel: RwSignal::new(if is_narrow() {
+                RightPanel::Hidden
+            } else {
+                RightPanel::Backlinks
+            }),
             main_view: RwSignal::new(MainView::Editor),
             palette: RwSignal::new(None),
             theme_id: RwSignal::new(ThemeId::DefaultDark),
@@ -177,6 +190,8 @@ impl AppState {
             sync_message: RwSignal::new(None),
             offline_storage: RwSignal::new(true),
             reload_requested: RwSignal::new(0),
+            installable: RwSignal::new(false),
+            drawer_open: RwSignal::new(false),
             tree_epoch: RwSignal::new(0),
             graph_epoch: RwSignal::new(0),
             save_requested: RwSignal::new(0),
@@ -283,6 +298,9 @@ impl AppState {
             }
         }
         self.main_view.set(MainView::Editor);
+        // Opening a note is the end of what the drawer is for. Harmless on a
+        // wide screen, where the sidebar is not a drawer at all.
+        self.drawer_open.set(false);
     }
 
     pub fn close_tab(&self, index: usize) {
@@ -420,6 +438,17 @@ fn collect_paths(node: &TreeNode, into: &mut HashSet<String>) {
             into.insert(title.clone());
         }
     }
+}
+
+/// Whether the window is narrow enough that the sidebar has to become a drawer.
+///
+/// The same breakpoint as the stylesheet's. Read once at startup, for the
+/// initial panel layout; the CSS handles every later resize on its own.
+pub fn is_narrow() -> bool {
+    web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|width| width.as_f64())
+        .is_some_and(|width| width <= 820.0)
 }
 
 pub fn title_of(path: &str) -> String {

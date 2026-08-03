@@ -126,6 +126,47 @@ fn the_frontend_loads_nothing_from_another_origin() {
     }
 }
 
+/// The manifest is what makes the app installable, and an install pulls every
+/// icon it names. One wrong path and the phone installs with a blank icon; one
+/// remote URL and it does not install at all on a network with no internet.
+#[test]
+fn the_web_manifest_names_only_icons_that_are_in_the_bundle() {
+    let root = repository_root();
+    let manifest =
+        std::fs::read_to_string(root.join("crates/ui/manifest.webmanifest")).expect("manifest");
+
+    assert!(
+        !manifest.contains("http://") && !manifest.contains("https://"),
+        "the web manifest points at another origin"
+    );
+
+    let index = std::fs::read_to_string(root.join("crates/ui/index.html")).expect("index.html");
+    let mut referenced: Vec<String> = Vec::new();
+    for source in [&manifest, &index] {
+        for (at, _) in source.match_indices("/icons/") {
+            let name: String = source[at..]
+                .chars()
+                .take_while(|c| !matches!(c, '"' | '\'' | ' ' | '\n' | ')'))
+                .collect();
+            referenced.push(name);
+        }
+    }
+
+    assert!(
+        !referenced.is_empty(),
+        "no icons referenced at all — the install would have no icon"
+    );
+
+    for icon in referenced {
+        let path = root.join("crates/ui").join(icon.trim_start_matches('/'));
+        assert!(
+            path.exists(),
+            "{} is referenced but not in crates/ui/icons — run crates/ui/render-icons.py",
+            path.display()
+        );
+    }
+}
+
 /// The policy is the second half of the same guarantee: even a reference that
 /// slipped past the check above must be refused at runtime.
 #[test]

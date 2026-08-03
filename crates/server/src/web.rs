@@ -70,6 +70,7 @@ fn content_security_policy() -> HeaderValue {
              font-src 'self' data:; \
              connect-src 'self'; \
              worker-src 'self'; \
+             manifest-src 'self'; \
              media-src 'self' blob:; \
              object-src 'none'; \
              base-uri 'none'; \
@@ -259,6 +260,22 @@ fn is_fingerprinted(path: &str) -> bool {
     hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// The `Content-Type` for a bundled asset.
+///
+/// `mime_guess` does not know `.webmanifest`, and an installable web app served
+/// one as `application/octet-stream` is refused by Chrome with a console
+/// message about the manifest's type — which is a long way from "the install
+/// button never appeared".
+fn content_type_for(path: &str) -> String {
+    if path.ends_with(".webmanifest") {
+        return "application/manifest+json".to_string();
+    }
+    mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .as_ref()
+        .to_string()
+}
+
 /// Serves the embedded frontend, falling back to `index.html` for client-side
 /// routes so that reloading on `/note/Projects/A.md` works.
 pub async fn serve_frontend(uri: Uri) -> Response {
@@ -268,11 +285,11 @@ pub async fn serve_frontend(uri: Uri) -> Response {
     // that shipping a new build actually replaces what the browser holds.
     if !path.is_empty() {
         if let Some(asset) = Assets::get(path) {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            let mime = content_type_for(path);
             let cacheable = is_fingerprinted(path) && !path.ends_with(".html");
             return (
                 [
-                    (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                    (header::CONTENT_TYPE, mime),
                     (
                         header::CACHE_CONTROL,
                         if cacheable {
@@ -344,6 +361,19 @@ pub fn no_content() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An installable web app hangs on the manifest's content type, and
+    /// `mime_guess` has never heard of the extension.
+    #[test]
+    fn the_web_manifest_gets_its_own_content_type() {
+        assert_eq!(
+            content_type_for("manifest.webmanifest"),
+            "application/manifest+json"
+        );
+        assert_eq!(content_type_for("icons/icon-192.png"), "image/png");
+        assert_eq!(content_type_for("index.html"), "text/html");
+        assert_eq!(content_type_for("sw.js"), "text/javascript");
+    }
 
     #[test]
     fn caches_only_hashed_asset_names_forever() {

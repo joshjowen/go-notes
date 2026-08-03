@@ -19,6 +19,7 @@ use crate::components::topbar::TopBar;
 use crate::components::tree::{create_note_in, FileTree};
 use crate::offline::diff::{change_counts, diff_lines, DiffKind};
 use crate::offline::{self, sync};
+use crate::pwa;
 use crate::state::{use_app, AppState, LeftPanel, MainView, Palette, RightPanel, ToastKind};
 use crate::theme;
 use crate::vault;
@@ -65,6 +66,7 @@ pub fn App() -> impl IntoView {
     Effect::new(move |_| {
         spawn_local(async move {
             offline::init(state).await;
+            pwa::watch(state);
 
             match api::me().await {
                 Ok(me) => {
@@ -238,6 +240,19 @@ fn Shell() -> impl IntoView {
     let state = use_app();
     install_shortcuts(state);
 
+    // The manifest advertises a "New note" shortcut, which a phone's launcher
+    // offers on a long press. It arrives as a query string on a cold start,
+    // which is the only signal a shortcut ever gets.
+    Effect::new(move |ran: Option<bool>| {
+        if ran.is_some() {
+            return true;
+        }
+        if launched_for_a_new_note() {
+            create_note_in(state, "");
+        }
+        true
+    });
+
     // Load the tree, and reload whenever something has changed it. Falls back to
     // the copy this device holds when the server cannot be reached.
     Effect::new(move |_| {
@@ -281,9 +296,28 @@ fn Shell() -> impl IntoView {
     let has_tabs = Memo::new(move |_| !state.tabs.get().is_empty());
 
     view! {
-        <div class="gn-app">
+        <div
+            class="gn-app"
+            class:gn-drawer-open=move || state.drawer_open.get()
+            class:gn-right-open=move || state.right_panel.get() != RightPanel::Hidden
+        >
             <TopBar />
             <OfflineBanner />
+
+            // Only ever visible on a narrow screen, where the sidebar is a
+            // drawer over the note rather than a column beside it. Tapping
+            // anywhere off the drawer is how everyone expects to close one.
+            <div
+                class="gn-scrim"
+                on:click=move |_| {
+                    state.drawer_open.set(false);
+                    // On a narrow screen the backlinks panel is over the note
+                    // too, and the scrim is the only thing in front of both.
+                    if crate::state::is_narrow() {
+                        state.right_panel.set(RightPanel::Hidden);
+                    }
+                }
+            ></div>
 
             <aside class="gn-sidebar">
                 <div class="gn-pane-header">
@@ -307,6 +341,18 @@ fn Shell() -> impl IntoView {
                         on:click=move |_| state.left_panel.set(LeftPanel::Tags)
                     >
                         "Tags"
+                    </button>
+
+                    // The drawer covers the toolbar it was opened from, so it
+                    // carries its own way out rather than relying on the user
+                    // guessing that the dimmed note behind it is tappable.
+                    <button
+                        class="gn-icon-button gn-narrow-only"
+                        title="Close"
+                        aria-label="Close"
+                        on:click=move |_| state.drawer_open.set(false)
+                    >
+                        "✕"
                     </button>
                 </div>
 
@@ -532,6 +578,13 @@ fn ConflictDialog() -> impl IntoView {
 /// viewer nobody scrolls.
 const DIFF_ROWS: usize = 200;
 
+/// True when the app was opened through the manifest's "New note" shortcut.
+fn launched_for_a_new_note() -> bool {
+    web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .is_some_and(|search| search.contains("new=1"))
+}
+
 // ---------------------------------------------------------------------------
 // Offline
 // ---------------------------------------------------------------------------
@@ -555,11 +608,10 @@ fn OfflineBanner() -> impl IntoView {
                     None => {
                         let waiting = state.pending.get().len();
                         let where_it_goes = if state.offline_storage.get() {
-                            " The server cannot be reached. What you write is being saved on this \
-                             device and will sync when it is back."
+                            " Saving to this device; it syncs when the server is back."
                         } else {
-                            " The server cannot be reached, and this browser is not giving the app \
-                             any storage — what you write is only held while this tab stays open."
+                            " This browser is giving the app no storage, so what you write is only \
+                             held while this tab stays open."
                         };
                         let queued = match waiting {
                             0 => String::new(),

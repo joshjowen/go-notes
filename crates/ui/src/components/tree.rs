@@ -123,6 +123,7 @@ fn TreeEntry(
             let folder_path = path.clone();
             let toggle_path = path.clone();
             let menu_path = path.clone();
+            let menu_button_path = path.clone();
             let drop_path = path.clone();
 
             view! {
@@ -190,6 +191,27 @@ fn TreeEntry(
                             "▸"
                         </span>
                         <span class="gn-tree-name">{name}</span>
+                        <button
+                            class="gn-row-menu"
+                            title="Actions"
+                            aria-label="Actions"
+                            on:click={
+                                let path = menu_button_path.clone();
+                                move |ev| {
+                                    ev.stop_propagation();
+                                    menu.set(
+                                        Some(MenuTarget {
+                                            path: path.clone(),
+                                            is_folder: true,
+                                            x: ev.client_x(),
+                                            y: ev.client_y(),
+                                        }),
+                                    );
+                                }
+                            }
+                        >
+                            "⋯"
+                        </button>
                     </div>
 
                     <Show when=move || open.get()>
@@ -212,6 +234,7 @@ fn TreeEntry(
             let open_path = path.clone();
             let open_title = title.clone();
             let menu_path = path.clone();
+            let menu_button_path = path.clone();
             let drag_path = path.clone();
             let is_active = {
                 let path = path.clone();
@@ -244,6 +267,31 @@ fn TreeEntry(
                         on:dragend=move |_| dragging.set(None)
                     >
                         <span class="gn-tree-name">{title}</span>
+                        // Long-pressing a row raises a `contextmenu` event on
+                        // most touch browsers, but not reliably and never
+                        // discoverably. The stylesheet shows this button only
+                        // where there is no mouse to right-click with.
+                        <button
+                            class="gn-row-menu"
+                            title="Actions"
+                            aria-label="Actions"
+                            on:click={
+                                let path = menu_button_path.clone();
+                                move |ev| {
+                                    ev.stop_propagation();
+                                    menu.set(
+                                        Some(MenuTarget {
+                                            path: path.clone(),
+                                            is_folder: false,
+                                            x: ev.client_x(),
+                                            y: ev.client_y(),
+                                        }),
+                                    );
+                                }
+                            }
+                        >
+                            "⋯"
+                        </button>
                     </div>
                 </li>
             }
@@ -266,6 +314,7 @@ fn ContextMenu(menu: RwSignal<Option<MenuTarget>>) -> impl IntoView {
             let for_new_note = target.path.clone();
             let for_new_folder = target.path.clone();
             let for_rename = target.path.clone();
+            let for_move = target.path.clone();
             let for_delete = target.path.clone();
 
             let folder_items = is_folder.then(|| {
@@ -289,6 +338,11 @@ fn ContextMenu(menu: RwSignal<Option<MenuTarget>>) -> impl IntoView {
                         rename_entry(state, &for_rename, is_folder);
                         menu.set(None);
                     }>"Rename…"</button>
+
+                    <button on:click=move |_| {
+                        move_to_folder(state, &for_move, is_folder);
+                        menu.set(None);
+                    }>"Move…"</button>
 
                     <button
                         class="gn-danger"
@@ -319,6 +373,13 @@ fn prompt(message: &str, default: &str) -> Option<String> {
     } else {
         Some(trimmed)
     }
+}
+
+/// Like [`prompt`], but an empty answer is an answer rather than a cancellation.
+fn prompt_allowing_empty(message: &str, default: &str) -> Option<String> {
+    let window = web_sys::window()?;
+    let answer = window.prompt_with_message_and_default(message, default).ok()??;
+    Some(answer.trim().to_string())
 }
 
 pub fn confirm(message: &str) -> bool {
@@ -394,6 +455,40 @@ fn rename_entry(state: AppState, path: &str, is_folder: bool) {
     } else {
         paths::join(parent, &format!("{name}.md"))
     };
+    move_entry_inner(state, path.to_string(), target, is_folder);
+}
+
+/// Moves an entry by asking for the destination folder.
+///
+/// Dragging a note into a folder needs a pointer that can hover, which a finger
+/// cannot — so on a phone this is the only way to reorganise a vault. It takes
+/// a folder path rather than a full path because that is the operation people
+/// mean: keep the name, change where it lives.
+fn move_to_folder(state: AppState, path: &str, is_folder: bool) {
+    let current = paths::parent_of(path);
+    // Not `prompt`: an empty answer means the top level here, and that helper
+    // cannot tell an empty answer from a cancelled one — which would turn
+    // "cancel" into "move this to the root".
+    let Some(destination) = prompt_allowing_empty(
+        "Move to which folder? Leave empty for the top level.",
+        current,
+    ) else {
+        return;
+    };
+
+    let destination = destination.trim_matches('/').to_string();
+    if !destination.is_empty() {
+        if let Err(err) = paths::validate_folder_path(&destination) {
+            state.error(err.to_string());
+            return;
+        }
+    }
+    if is_folder && (destination == path || paths::is_within(&destination, path)) {
+        state.error("A folder cannot be moved inside itself.");
+        return;
+    }
+
+    let target = paths::join(&destination, paths::basename(path));
     move_entry_inner(state, path.to_string(), target, is_folder);
 }
 

@@ -25,6 +25,17 @@ pub fn TopBar() -> impl IntoView {
     view! {
         <header class="gn-topbar">
             <div class="gn-topbar-group">
+                // The drawer toggle only exists on a narrow screen; on a wide
+                // one the sidebar is always there and the stylesheet hides it.
+                <button
+                    class="gn-tool-button gn-narrow-only"
+                    title="Files"
+                    aria-label="Files"
+                    on:click=move |_| state.drawer_open.update(|open| *open = !*open)
+                >
+                    <span class="gn-tool-icon">"☰"</span>
+                </button>
+
                 <span class="gn-brand">"Go-Notes"</span>
 
                 <button
@@ -37,7 +48,7 @@ pub fn TopBar() -> impl IntoView {
                 </button>
 
                 <button
-                    class="gn-tool-button"
+                    class="gn-tool-button gn-wide-only"
                     title="Search all notes"
                     on:click=move |_| {
                         state.left_panel.set(LeftPanel::Search);
@@ -81,10 +92,24 @@ pub fn TopBar() -> impl IntoView {
             </div>
 
             <div class="gn-topbar-group gn-topbar-right">
+                // Shown only while the browser is actually holding an install
+                // offer, so it is never a button that explains it cannot do
+                // anything.
+                <Show when=move || state.installable.get()>
+                    <button
+                        class="gn-tool-button gn-install-button"
+                        title="Install Go-Notes as an app on this device"
+                        on:click=move |_| crate::pwa::install(state)
+                    >
+                        <span class="gn-tool-icon">"⤓"</span>
+                        <span class="gn-tool-label">"Install"</span>
+                    </button>
+                </Show>
+
                 <SyncStatus />
 
                 <button
-                    class="gn-tool-button"
+                    class="gn-tool-button gn-wide-only"
                     title=move || {
                         if state.right_panel.get() == RightPanel::Hidden {
                             "Show the backlinks panel"
@@ -107,7 +132,7 @@ pub fn TopBar() -> impl IntoView {
                 </button>
 
                 <button
-                    class="gn-tool-button"
+                    class="gn-tool-button gn-wide-only"
                     title="Theme"
                     on:click=move |_| state.theme_dialog_open.set(true)
                 >
@@ -123,7 +148,7 @@ pub fn TopBar() -> impl IntoView {
                     <span class="gn-tool-icon">"⋯"</span>
                 </button>
 
-                <div class="gn-user-menu">
+                <div class="gn-user-menu gn-wide-only">
                     <span class="gn-username" title=move || {
                         state
                             .me

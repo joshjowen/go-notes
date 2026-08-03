@@ -236,6 +236,12 @@ pub fn GraphView() -> impl IntoView {
     });
 
     // --- pointer interaction ------------------------------------------------
+    //
+    // Pointer events rather than mouse events, so a finger drags a node and
+    // pans the canvas exactly as a mouse does — one set of handlers for both,
+    // which is the whole reason the API exists. The canvas carries
+    // `touch-action: none` so the browser stops trying to scroll the page out
+    // from under the gesture.
 
     let pointer_position = |ev: &web_sys::MouseEvent| -> (Vec2, f32, f32) {
         let target: web_sys::Element = ev.target().unwrap().unchecked_into();
@@ -351,6 +357,22 @@ pub fn GraphView() -> impl IntoView {
         }
     };
 
+    // Zoom, for anyone without a scroll wheel. A pinch would be nicer and needs
+    // two tracked pointers and a gesture state machine; two buttons work today
+    // and are also the only way to zoom from a keyboard.
+    let zoom_by = {
+        let scene = scene.clone();
+        move |factor: f32| {
+            let mut scene = scene.borrow_mut();
+            scene.camera.scale = (scene.camera.scale * factor).clamp(0.05, 6.0);
+        }
+    };
+    let zoom_in = {
+        let zoom_by = zoom_by.clone();
+        move |_| zoom_by(1.25)
+    };
+    let zoom_out = move |_| zoom_by(1.0 / 1.25);
+
     let fit_now = {
         let scene = scene.clone();
         move |_| {
@@ -368,10 +390,17 @@ pub fn GraphView() -> impl IntoView {
         <div class="gn-graph">
             <canvas
                 node_ref=canvas_ref
-                on:mousemove=on_move
-                on:mousedown=on_down
-                on:mouseup=on_up.clone()
-                on:mouseleave=on_up
+                on:pointermove=move |ev: web_sys::PointerEvent| on_move(ev.unchecked_into())
+                on:pointerdown=move |ev: web_sys::PointerEvent| on_down(ev.unchecked_into())
+                on:pointerup={
+                    let on_up = on_up.clone();
+                    move |ev: web_sys::PointerEvent| on_up(ev.unchecked_into())
+                }
+                on:pointercancel={
+                    let on_up = on_up.clone();
+                    move |ev: web_sys::PointerEvent| on_up(ev.unchecked_into())
+                }
+                on:pointerleave=move |ev: web_sys::PointerEvent| on_up(ev.unchecked_into())
                 on:click=on_click
                 on:wheel=on_wheel
             ></canvas>
@@ -407,6 +436,11 @@ pub fn GraphView() -> impl IntoView {
                 <button class="gn-graph-fit" on:click=fit_now>
                     "Fit to view"
                 </button>
+
+                <span class="gn-graph-zoom">
+                    <button title="Zoom out" aria-label="Zoom out" on:click=zoom_out>"−"</button>
+                    <button title="Zoom in" aria-label="Zoom in" on:click=zoom_in>"+"</button>
+                </span>
 
                 <span class="gn-graph-count">
                     {move || {

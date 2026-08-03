@@ -43,6 +43,7 @@ features = [
     "ResizeObserverEntry",
     "KeyboardEvent",
     "MouseEvent",
+    "PointerEvent",
     "WheelEvent",
     "DragEvent",
     "DataTransfer",

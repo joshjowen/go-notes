@@ -2,9 +2,42 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
+    <!--
+      `viewport-fit=cover` puts the page under the notch and the home
+      indicator; the layout pads itself back out with env(safe-area-inset-*).
+      `maximum-scale` is deliberately *not* set: pinch-zoom is an accessibility
+      feature, and the fix for a form that zooms on focus is a 16px font, which
+      the stylesheet does.
+    -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
     <title>Go-Notes</title>
+
+    <!--
+      Installed as an app: the manifest describes the icons and the standalone
+      window, and the Apple-prefixed tags are what iOS reads instead, since
+      Safari still ignores most of the manifest for Add to Home Screen.
+
+      The theme colour is what tints the status bar and the window chrome. Two
+      of them, so a phone in light mode does not get a dark bar over a light
+      page.
+    -->
+    <link data-trunk rel="copy-file" href="manifest.webmanifest" />
+    <link data-trunk rel="copy-dir" href="icons" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+    <meta name="theme-color" content="#1e1e1e" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Go-Notes" />
+    <!--
+      `black-translucent` is what lets the page run under the status bar on iOS,
+      which is the point of viewport-fit=cover above.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
     <!--
       The editor bundle is a classic script, loaded before the WebAssembly

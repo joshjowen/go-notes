@@ -256,6 +256,7 @@ fn commands() -> Vec<Row> {
                 })
         }),
         row("Sync now", "", |state| vault::sync_now(state)),
+        row("Install on this device", "", |state| crate::pwa::install(state)),
         row("Forget this device's local copy", "", |state| {
             // Offered because "the notes are cached in this browser" is a thing
             // someone may want to undo on a machine that is not theirs, without

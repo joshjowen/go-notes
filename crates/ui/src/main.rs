@@ -8,6 +8,7 @@ mod app;
 mod components;
 mod editor;
 mod offline;
+mod pwa;
 mod state;
 mod theme;
 mod vault;
