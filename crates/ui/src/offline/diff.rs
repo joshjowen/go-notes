@@ -34,44 +34,77 @@ pub struct DiffLine {
 /// changed region as a wholesale replacement.
 pub const MAX_DIFF_LINES: usize = 1200;
 
+/// One element of a line-by-line alignment between two texts: present in
+/// both, or only on the left (`mine`, in the two-way diff's terms) or only on
+/// the right (`theirs`).
+///
+/// Generic over what "left" and "right" mean so the same alignment serves the
+/// two-way diff shown in the conflict dialog (`diff_lines`, below) and the
+/// three-way merge in [`super::merge`] that tries to avoid showing one —
+/// there `left` is "base vs. mine" and, separately, "base vs. theirs".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aligned<'a> {
+    Same(&'a str),
+    Left(&'a str),
+    Right(&'a str),
+}
+
+/// Aligns `left` and `right` line by line.
+///
+/// Identical head and tail are stripped first (most of a document, after a
+/// small edit), and beyond [`MAX_DIFF_LINES`] of remaining difference the
+/// comparison gives up on being useful to read and reports the whole middle
+/// as replaced rather than spending a quadratic amount of work on it.
+pub fn align<'a>(left: &'a str, right: &'a str) -> Vec<Aligned<'a>> {
+    let left: Vec<&str> = left.lines().collect();
+    let right: Vec<&str> = right.lines().collect();
+
+    let head = left
+        .iter()
+        .zip(right.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let tail = left[head..]
+        .iter()
+        .rev()
+        .zip(right[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let left_middle = &left[head..left.len() - tail];
+    let right_middle = &right[head..right.len() - tail];
+
+    let mut out: Vec<Aligned> = Vec::new();
+    out.extend(left[..head].iter().map(|line| Aligned::Same(line)));
+
+    if left_middle.len() > MAX_DIFF_LINES || right_middle.len() > MAX_DIFF_LINES {
+        // Right before left, matching the reading order of the conflict
+        // dialog this feeds: "theirs", then "mine".
+        out.extend(right_middle.iter().map(|line| Aligned::Right(line)));
+        out.extend(left_middle.iter().map(|line| Aligned::Left(line)));
+    } else {
+        out.extend(lcs_align(left_middle, right_middle));
+    }
+
+    out.extend(left[left.len() - tail..].iter().map(|line| Aligned::Same(line)));
+    out
+}
+
 /// Compares two versions of a note, line by line.
 ///
 /// `mine` is the local version, `theirs` the server's; the result is in
 /// document order with unchanged lines included, so it can be rendered as a
 /// unified diff.
 pub fn diff_lines(mine: &str, theirs: &str) -> Vec<DiffLine> {
-    let mine: Vec<&str> = mine.lines().collect();
-    let theirs: Vec<&str> = theirs.lines().collect();
-
-    // Identical head and tail, which is most of a document after a small edit.
-    let head = mine
-        .iter()
-        .zip(theirs.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let tail = mine[head..]
-        .iter()
-        .rev()
-        .zip(theirs[head..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let mine_middle = &mine[head..mine.len() - tail];
-    let theirs_middle = &theirs[head..theirs.len() - tail];
-
-    let mut out: Vec<DiffLine> = Vec::new();
-    out.extend(mine[..head].iter().map(|line| same(line)));
-
-    if mine_middle.len() > MAX_DIFF_LINES || theirs_middle.len() > MAX_DIFF_LINES {
-        out.extend(theirs_middle.iter().map(|line| line_of(DiffKind::Theirs, line)));
-        out.extend(mine_middle.iter().map(|line| line_of(DiffKind::Mine, line)));
-    } else {
-        out.extend(lcs_diff(mine_middle, theirs_middle));
-    }
-
-    out.extend(mine[mine.len() - tail..].iter().map(|line| same(line)));
-    out
+    align(mine, theirs)
+        .into_iter()
+        .map(|piece| match piece {
+            Aligned::Same(text) => same(text),
+            Aligned::Left(text) => line_of(DiffKind::Mine, text),
+            Aligned::Right(text) => line_of(DiffKind::Theirs, text),
+        })
+        .collect()
 }
 
 /// How many lines differ, for a one-line summary above the diff.
@@ -96,17 +129,17 @@ fn line_of(kind: DiffKind, text: &str) -> DiffLine {
 }
 
 /// Classic LCS table, walked backwards to produce the edit script.
-fn lcs_diff(mine: &[&str], theirs: &[&str]) -> Vec<DiffLine> {
-    let rows = mine.len();
-    let columns = theirs.len();
+fn lcs_align<'a>(left: &[&'a str], right: &[&'a str]) -> Vec<Aligned<'a>> {
+    let rows = left.len();
+    let columns = right.len();
 
-    // table[i][j] = length of the longest common subsequence of mine[i..] and
-    // theirs[j..]. Built from the end so the walk below runs forwards, which
+    // table[i][j] = length of the longest common subsequence of left[i..] and
+    // right[j..]. Built from the end so the walk below runs forwards, which
     // keeps the output in document order without a reversal.
     let mut table = vec![vec![0usize; columns + 1]; rows + 1];
     for i in (0..rows).rev() {
         for j in (0..columns).rev() {
-            table[i][j] = if mine[i] == theirs[j] {
+            table[i][j] = if left[i] == right[j] {
                 table[i + 1][j + 1] + 1
             } else {
                 table[i + 1][j].max(table[i][j + 1])
@@ -117,20 +150,20 @@ fn lcs_diff(mine: &[&str], theirs: &[&str]) -> Vec<DiffLine> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);
     while i < rows && j < columns {
-        if mine[i] == theirs[j] {
-            out.push(same(mine[i]));
+        if left[i] == right[j] {
+            out.push(Aligned::Same(left[i]));
             i += 1;
             j += 1;
         } else if table[i + 1][j] >= table[i][j + 1] {
-            out.push(line_of(DiffKind::Mine, mine[i]));
+            out.push(Aligned::Left(left[i]));
             i += 1;
         } else {
-            out.push(line_of(DiffKind::Theirs, theirs[j]));
+            out.push(Aligned::Right(right[j]));
             j += 1;
         }
     }
-    out.extend(mine[i..].iter().map(|line| line_of(DiffKind::Mine, line)));
-    out.extend(theirs[j..].iter().map(|line| line_of(DiffKind::Theirs, line)));
+    out.extend(left[i..].iter().map(|line| Aligned::Left(line)));
+    out.extend(right[j..].iter().map(|line| Aligned::Right(line)));
     out
 }
 

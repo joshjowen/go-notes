@@ -105,10 +105,12 @@ pub fn CommandPalette() -> impl IntoView {
             RowAction::CreateNote { path } => {
                 let title = go_notes_shared::paths::stem(&path).to_string();
                 spawn_local(async move {
-                    match vault::create_note(state, path, format!("# {title}\n\n")).await {
+                    let markdown = format!("# {title}\n\n");
+                    match vault::create_note(state, path, markdown.clone()).await {
                         Ok(written) => {
                             state.refresh_all();
                             state.open_tab(written.path.clone(), written.title.clone());
+                            crate::save::opened(state, &written.path, written.content_hash.clone(), markdown);
                         }
                         Err(err) => state.error(err.user_message()),
                     }

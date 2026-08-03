@@ -402,10 +402,11 @@ pub fn create_note_in(state: AppState, folder: &str) {
     let path = paths::join(folder, &format!("{name}.md"));
     spawn_local(async move {
         let markdown = format!("# {}\n\n", title_of(&path));
-        match vault::create_note(state, path.clone(), markdown).await {
+        match vault::create_note(state, path.clone(), markdown.clone()).await {
             Ok(written) => {
                 state.refresh_all();
                 state.open_tab(written.path.clone(), written.title.clone());
+                crate::save::opened(state, &written.path, written.content_hash.clone(), markdown);
                 if written.queued {
                     state.notify("Created on this device. It will reach the server when the connection is back.");
                 }

@@ -14,8 +14,11 @@
  */
 
 import { Crepe } from '@milkdown/crepe'
+import { editorViewCtx, parserCtx } from '@milkdown/kit/core'
 import { listener } from '@milkdown/kit/plugin/listener'
+import { TextSelection } from '@milkdown/kit/prose/state'
 
+import { linkPlugins, linkSlashItem } from './link'
 import { createSourceEditor, type SourceEditor } from './source-mode'
 import { setWikiLinkHooks, wikiLinkPlugins } from './wikilink'
 import { normalizeTarget } from './wikilink-mdast'
@@ -114,10 +117,13 @@ async function buildWysiwyg(handle: Handle) {
         blockOnUpload: (file: File) => handle.options.onUploadFile(file),
         inlineOnUpload: (file: File) => handle.options.onUploadFile(file),
       },
+      [Crepe.Feature.BlockEdit]: {
+        buildMenu: (builder) => builder.getGroup('advanced').addItem('link', linkSlashItem),
+      },
     },
   })
 
-  crepe.editor.use(listener).use(wikiLinkPlugins.flat())
+  crepe.editor.use(listener).use(wikiLinkPlugins.flat()).use(linkPlugins.flat())
 
   crepe.on((api) => {
     api.markdownUpdated((_ctx, markdown) => reportChange(handle, markdown))
@@ -277,6 +283,49 @@ async function setMarkdown(id: number, markdown: string): Promise<void> {
   handle.loading = false
 }
 
+/**
+ * Replaces the document in place, preserving the selection — unlike
+ * `setMarkdown`, which tears the editor down and rebuilds it.
+ *
+ * Used for text that arrives while the note may still be open and being typed
+ * into: a background refresh of the open note, or a three-way merge landing
+ * after a save conflict that turned out not to need a person's decision.
+ * Rebuilding the editor for either would drop the cursor and, in the merge
+ * case, would look like the whole document had just reloaded under the
+ * user's hands rather than like the one paragraph someone else touched.
+ */
+async function patchMarkdown(id: number, markdown: string): Promise<void> {
+  const handle = handleOf(id)
+  if (!handle) return
+  if (markdown === currentMarkdown(handle)) return
+
+  handle.markdown = markdown
+  handle.loading = true
+
+  if (handle.mode === 'source' && handle.source) {
+    handle.source.patchMarkdown(markdown)
+    handle.loading = false
+    return
+  }
+
+  if (handle.crepe) {
+    handle.crepe.editor.action((ctx) => {
+      const parse = ctx.get(parserCtx)
+      const view = ctx.get(editorViewCtx)
+      const next = parse(markdown)
+
+      const { state } = view
+      const tr = state.tr.replaceWith(0, state.doc.content.size, next.content)
+      const mapped = tr.mapping.map(state.selection.from)
+      const clamped = Math.min(mapped, tr.doc.content.size)
+      tr.setSelection(TextSelection.near(tr.doc.resolve(clamped)))
+      view.dispatch(tr)
+    })
+  }
+
+  handle.loading = false
+}
+
 async function setMode(id: number, mode: EditorMode): Promise<void> {
   const handle = handleOf(id)
   if (!handle) return
@@ -335,6 +384,7 @@ const api = {
   mount,
   getMarkdown,
   setMarkdown,
+  patchMarkdown,
   setMode,
   getMode,
   setKnownTargets,

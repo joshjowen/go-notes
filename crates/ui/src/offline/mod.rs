@@ -22,6 +22,7 @@ pub mod cache;
 pub mod diff;
 pub mod idb;
 pub mod index;
+pub mod merge;
 pub mod net;
 pub mod queue;
 pub mod sync;

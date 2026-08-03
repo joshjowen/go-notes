@@ -174,6 +174,19 @@ const AUTOCOMPLETE_KEY = new PluginKey('go-notes-wikilink-autocomplete')
 const LOOKBEHIND = 200
 
 /**
+ * How long to wait, after the query text last changed, before asking for
+ * matches.
+ *
+ * `view.update` runs on every ProseMirror transaction, including a
+ * selection-only change with no text edited — so without this, moving the
+ * caret back and forth across an open `[[query` fired one `onQuery` request
+ * per move. Debounced and deduplicated against the last query actually sent,
+ * this instead fires once per pause in typing, the same shape as the
+ * autosave debounce in `crate::save`.
+ */
+const QUERY_DEBOUNCE_MS = 120
+
+/**
  * Stands in for an inline leaf — an existing link pill, an inline image — while
  * scanning text.
  *
@@ -200,6 +213,11 @@ export const wikiLinkAutocomplete = $prose(() => {
   let selected = 0
   let queryFrom = -1
   let latestQuery = 0
+  // The last query text a request was actually sent for, so an update that
+  // re-runs without the text changing — a selection move, a re-render — does
+  // not send it again.
+  let lastQuerySent: string | null = null
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined
 
   function close() {
     popup?.remove()
@@ -207,6 +225,11 @@ export const wikiLinkAutocomplete = $prose(() => {
     items = []
     selected = 0
     queryFrom = -1
+    lastQuerySent = null
+    if (debounceTimer !== undefined) {
+      clearTimeout(debounceTimer)
+      debounceTimer = undefined
+    }
   }
 
   function ensurePopup(): HTMLDivElement {
@@ -353,16 +376,23 @@ export const wikiLinkAutocomplete = $prose(() => {
         // `$from.start()` is the document position of the block's first
         // character, so offsets within the block convert by simple addition.
         queryFrom = $from.start() + sliceFrom + open
-        const token = ++latestQuery
 
-        void hooks.onQuery(query).then((results) => {
-          // Discard a response that arrived after the user kept typing, or the
-          // list would flicker back to an older query's results.
-          if (token !== latestQuery) return
-          items = results.slice(0, 12)
-          selected = 0
-          render(view)
-        })
+        if (query === lastQuerySent) return
+        if (debounceTimer !== undefined) clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => {
+          debounceTimer = undefined
+          lastQuerySent = query
+          const token = ++latestQuery
+
+          void hooks.onQuery(query).then((results) => {
+            // Discard a response that arrived after the user kept typing, or
+            // the list would flicker back to an older query's results.
+            if (token !== latestQuery) return
+            items = results.slice(0, 12)
+            selected = 0
+            render(view)
+          })
+        }, QUERY_DEBOUNCE_MS)
       },
       destroy: close,
     }),

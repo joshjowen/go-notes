@@ -239,6 +239,7 @@ fn LoginScreen() -> impl IntoView {
 fn Shell() -> impl IntoView {
     let state = use_app();
     install_shortcuts(state);
+    crate::refresh::watch(state);
 
     // The manifest advertises a "New note" shortcut, which a phone's launcher
     // offers on a long press. It arrives as a query string on a cold start,
@@ -270,8 +271,15 @@ fn Shell() -> impl IntoView {
     });
 
     // Refresh the backlinks pane when the active note changes.
+    //
+    // A `Memo` rather than reading `state.active_path()` straight in the
+    // effect: `active_path()` tracks the whole `tabs` vector, so a plain
+    // effect would refetch backlinks on every `mark_dirty`/`set_hash` — which
+    // fire on nearly every keystroke and every save — rather than only on an
+    // actual tab switch. The same reasoning as `has_tabs`, below.
+    let active_path = Memo::new(move |_| state.active_path());
     Effect::new(move |_| {
-        let Some(path) = state.active_path() else {
+        let Some(path) = active_path.get() else {
             state.backlinks.set(Vec::new());
             return;
         };

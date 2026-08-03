@@ -63,6 +63,10 @@ pub async fn tree(state: AppState) -> ApiResult<TreeNode> {
     match observe(state, api::tree().await) {
         Ok(tree) => {
             cache::put_tree(&tree).await;
+            // Only on a successful fetch: the server's tree is the authority on
+            // what still exists, and pruning against a cached fallback would
+            // compare a stale list against itself.
+            cache::retain_notes(&local_tree::note_paths(&tree)).await;
             Ok(tree)
         }
         Err(err) if err.is_offline() => match cache::tree().await {

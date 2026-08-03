@@ -19,6 +19,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirro
 export interface SourceEditor {
   getMarkdown: () => string
   setMarkdown: (value: string) => void
+  patchMarkdown: (value: string) => void
   focus: () => void
   destroy: () => void
 }
@@ -72,6 +73,37 @@ export function createSourceEditor(
       if (value === view.state.doc.toString()) return
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: value },
+      })
+    },
+    // Replacing the whole document, as `setMarkdown` does, maps the caret
+    // through one change spanning everything — which collapses it to the
+    // edit's boundary even when the caret sat somewhere untouched. This
+    // instead changes only the span that actually differs, so a caret outside
+    // it — the common case for a background refresh or a merged save — never
+    // moves at all.
+    patchMarkdown: (value) => {
+      const current = view.state.doc.toString()
+      if (value === current) return
+
+      const maxAffix = Math.min(current.length, value.length)
+      let prefix = 0
+      while (prefix < maxAffix && current[prefix] === value[prefix]) prefix++
+
+      let suffix = 0
+      const maxSuffix = maxAffix - prefix
+      while (
+        suffix < maxSuffix &&
+        current[current.length - 1 - suffix] === value[value.length - 1 - suffix]
+      ) {
+        suffix++
+      }
+
+      view.dispatch({
+        changes: {
+          from: prefix,
+          to: current.length - suffix,
+          insert: value.slice(prefix, value.length - suffix),
+        },
       })
     },
     focus: () => view.focus(),
