@@ -20,6 +20,7 @@ use super::cache;
 use super::queue::{PendingOp, QueuedOp};
 use super::CachedNote;
 use crate::api::{self, ApiFailure};
+use crate::save;
 use crate::state::{AppState, Conflict, ConflictOrigin, SyncPhase};
 
 /// What replaying one operation did.
@@ -63,6 +64,10 @@ pub async fn run(state: AppState) {
     if queue.is_empty() {
         state.sync.set(SyncPhase::Idle);
         state.sync_message.set(None);
+        // Nothing of ours to replay does not mean nothing changed: this is
+        // also how reconnecting and the "Sync now" button reach here, and
+        // both are read-only refreshes as much as they are a replay.
+        refresh_after_sync(state, &[]);
         return;
     }
 
@@ -126,9 +131,7 @@ pub async fn run(state: AppState) {
     });
 
     report(state, applied);
-    if applied > 0 {
-        refresh_after_sync(state, &touched);
-    }
+    refresh_after_sync(state, &touched);
 }
 
 /// Tells the user what just happened, once, rather than per operation.
@@ -228,6 +231,19 @@ async fn apply(state: AppState, queued: &QueuedOp) -> Outcome {
                 state.set_hash(path, response.meta.content_hash);
                 Outcome::Done
             }
+            // The same text on both sides is not a conflict; it is this
+            // device's own write, already applied by an earlier replay that
+            // landed before its acknowledgement got back.
+            Err(ApiFailure::Conflict(body)) if body.current_markdown == *markdown => {
+                cache::put_note(&CachedNote::new(
+                    path.clone(),
+                    markdown.clone(),
+                    body.current_hash.clone(),
+                ))
+                .await;
+                state.set_hash(path, body.current_hash);
+                Outcome::Done
+            }
             Err(ApiFailure::Conflict(body)) => Outcome::Stop(Conflict {
                 path: path.clone(),
                 mine: markdown.clone(),
@@ -311,26 +327,29 @@ fn classify(err: ApiFailure) -> Outcome {
 
 /// Keeps the local version, saved against the hash the server just reported so
 /// the write is accepted rather than rejected a second time.
+///
+/// Saves whatever is actually in the editor right now, not the snapshot the
+/// conflict was raised with — the dialog does not stop someone from typing
+/// while it decides what to show them, and "keep mine" should keep that too.
 pub fn keep_mine(state: AppState, conflict: Conflict) {
     state.clear_conflict(&conflict.path);
 
+    let mine = if state.active_path().as_deref() == Some(conflict.path.as_str()) {
+        state.active_markdown.get_untracked()
+    } else {
+        conflict.mine.clone()
+    };
+
     spawn_local(async move {
-        match api::save_note(
-            conflict.path.clone(),
-            conflict.mine.clone(),
-            conflict.their_hash.clone(),
-        )
-        .await
-        {
+        match api::save_note(conflict.path.clone(), mine.clone(), conflict.their_hash.clone()).await {
             Ok(response) => {
                 cache::put_note(&CachedNote::new(
                     conflict.path.clone(),
-                    conflict.mine.clone(),
+                    mine.clone(),
                     response.meta.content_hash.clone(),
                 ))
                 .await;
-                state.set_hash(&conflict.path, response.meta.content_hash.clone());
-                state.mark_dirty(&conflict.path, false);
+                save::resolved_kept(state, conflict.path.clone(), response.meta.content_hash.clone(), mine);
                 settle(state, &conflict).await;
                 state.notify("Kept your version.");
                 state.refresh_all();
@@ -340,7 +359,8 @@ pub fn keep_mine(state: AppState, conflict: Conflict) {
     });
 }
 
-/// Takes the server's version, discarding the local one.
+/// Takes the server's version, discarding the local one — including anything
+/// typed since the conflict was raised, which is what this choice means.
 pub fn take_theirs(state: AppState, conflict: Conflict) {
     state.clear_conflict(&conflict.path);
 
@@ -351,8 +371,12 @@ pub fn take_theirs(state: AppState, conflict: Conflict) {
             conflict.their_hash.clone(),
         ))
         .await;
-        state.set_hash(&conflict.path, conflict.their_hash.clone());
-        state.mark_dirty(&conflict.path, false);
+        save::resolved_replaced(
+            state,
+            conflict.path.clone(),
+            conflict.their_hash.clone(),
+            conflict.theirs.clone(),
+        );
         settle(state, &conflict).await;
 
         if state.active_path().as_deref() == Some(conflict.path.as_str()) {
@@ -387,8 +411,12 @@ pub fn keep_both(state: AppState, conflict: Conflict) {
                     conflict.their_hash.clone(),
                 ))
                 .await;
-                state.set_hash(&conflict.path, conflict.their_hash.clone());
-                state.mark_dirty(&conflict.path, false);
+                save::resolved_replaced(
+                    state,
+                    conflict.path.clone(),
+                    conflict.their_hash.clone(),
+                    conflict.theirs.clone(),
+                );
                 settle(state, &conflict).await;
 
                 if state.active_path().as_deref() == Some(conflict.path.as_str()) {
@@ -396,6 +424,12 @@ pub fn keep_both(state: AppState, conflict: Conflict) {
                 }
                 state.refresh_all();
                 state.open_tab(response.meta.path.clone(), response.meta.title.clone());
+                save::opened(
+                    state,
+                    &response.meta.path,
+                    response.meta.content_hash.clone(),
+                    conflict.mine.clone(),
+                );
                 state.notify("Saved your version as a separate note.");
             }
             Err(err) => fail(state, err, "The copy could not be saved"),

@@ -116,22 +116,37 @@ real error and must surface as one.
 
 `crates/ui/src/offline/` holds the pieces: `cache` (IndexedDB), `queue` (the
 outbox and its compaction), `sync` (ordered replay), `net` (reachability),
-`index` (search/tags/backlinks over cached notes), `diff`, `tree`. Two invariants
-live there and are easy to break:
+`index` (search/tags/backlinks over cached notes), `diff`, `merge` (the
+live-editor three-way merge below), `tree`. Two invariants live there and are
+easy to break:
 
 - **A queued save carries the content hash the server issued**, never one
   computed locally. That hash is the `If-Match` token; compaction keeps the
   earliest one and the latest text.
 - **Replay is ordered and stops at the first conflict.** Operations are not
   independent, and a conflict is a decision for a person — never resolve one
-  automatically.
+  automatically. This still holds without exception: the replay queue has a
+  hash for the common ancestor but not its text, so it cannot merge, only ask.
 
 ### Concurrency and conflicts
 
 Saves carry an `If-Match` content hash, so a note edited in another tab, over
-SSH, or by a sync replay surfaces as a conflict dialog with a line diff and
-three choices (keep mine / take theirs / keep both). There is no code path that
-picks a winner.
+SSH, or by a sync replay surfaces as a conflict. Before it reaches a person,
+`crates/ui/src/save.rs` tries three things, in order, using the client's own
+in-memory copy of the note as it stood before either side's edit: the
+server's content is byte-identical to what this device just tried to send (an
+echo of its own write, most often two overlapping autosaves for the same
+edit — adopt the new hash and move on); the server's content is exactly what
+this device last confirmed (the token alone was stale — retry unchanged); or
+a three-way merge (`offline::merge::three_way`) finds that the two sides
+touched different, non-adjacent regions of the note (merge, save, and patch
+the result into the editor without disturbing the cursor). Only when none of
+those apply does the conflict dialog appear, with a line diff and three
+choices (keep mine / take theirs / keep both) — a real disagreement is still
+always a person's decision, never resolved automatically. The replay queue
+(`offline::sync`) does not get any of this: it holds a hash for the common
+ancestor but not its text, so a conflict there still stops the replay outright
+and asks, exactly as before.
 
 ### Nothing loads from another origin
 

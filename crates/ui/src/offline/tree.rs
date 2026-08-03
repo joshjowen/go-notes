@@ -62,6 +62,25 @@ pub fn rename(tree: &mut TreeNode, from: &str, to: &str) {
     sort_children(children);
 }
 
+/// Every note path in the tree, for pruning the local cache down to what the
+/// vault actually still contains.
+pub fn note_paths(tree: &TreeNode) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_note_paths(tree, &mut out);
+    out
+}
+
+fn collect_note_paths(node: &TreeNode, out: &mut Vec<String>) {
+    match node {
+        TreeNode::Folder { children, .. } => {
+            for child in children {
+                collect_note_paths(child, out);
+            }
+        }
+        TreeNode::Note { path, .. } => out.push(path.clone()),
+    }
+}
+
 /// Records a folder's collapsed state, which is per-user UI state the server
 /// normally keeps. Held here too so the sidebar looks the same after a reload
 /// with no server to ask.
@@ -317,5 +336,23 @@ mod tests {
         insert_note(&mut tree, "A.md");
         rename(&mut tree, "Missing.md", "Other.md");
         assert_eq!(paths_of(&tree), vec!["A.md".to_string()]);
+    }
+
+    #[test]
+    fn note_paths_lists_notes_but_not_folders() {
+        let mut tree = root();
+        insert_note(&mut tree, "Projects/Kitchen/Reno.md");
+        insert_note(&mut tree, "Standalone.md");
+        insert_folder(&mut tree, "Empty");
+
+        let mut found = note_paths(&tree);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "Projects/Kitchen/Reno.md".to_string(),
+                "Standalone.md".to_string(),
+            ]
+        );
     }
 }

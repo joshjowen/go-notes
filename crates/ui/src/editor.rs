@@ -19,6 +19,13 @@ extern "C" {
     #[wasm_bindgen(js_namespace = GoNotesEditor, js_name = setMarkdown)]
     fn js_set_markdown(id: i32, markdown: &str) -> js_sys::Promise;
 
+    /// Replaces the document in place, preserving the selection — unlike
+    /// `setMarkdown`, which rebuilds the editor. Used when text arrives from
+    /// outside while someone may still be typing: a merged save, a periodic
+    /// background refresh of the open note.
+    #[wasm_bindgen(js_namespace = GoNotesEditor, js_name = patchMarkdown)]
+    fn js_patch_markdown(id: i32, markdown: &str) -> js_sys::Promise;
+
     #[wasm_bindgen(js_namespace = GoNotesEditor, js_name = setMode)]
     fn js_set_mode(id: i32, mode: &str) -> js_sys::Promise;
 
@@ -124,6 +131,12 @@ impl Drop for EditorHandle {
 /// Replaces the editor's document.
 pub async fn set_markdown(id: i32, markdown: &str) {
     let _ = wasm_bindgen_futures::JsFuture::from(js_set_markdown(id, markdown)).await;
+}
+
+/// Replaces the editor's document without losing the caret, for text that
+/// arrives while the note may still be open and being typed into.
+pub async fn patch_markdown(id: i32, markdown: &str) {
+    let _ = wasm_bindgen_futures::JsFuture::from(js_patch_markdown(id, markdown)).await;
 }
 
 /// Switches between rich text and raw markdown.

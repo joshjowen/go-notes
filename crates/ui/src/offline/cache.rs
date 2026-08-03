@@ -110,6 +110,55 @@ pub async fn remove_under(path: &str) {
     }
 }
 
+/// Drops cached notes the server's tree no longer lists — the counterpart to
+/// every `put_note`, which nothing was previously taking back out.
+///
+/// Without this, a note deleted on another device stays in this device's
+/// IndexedDB forever and keeps turning up in offline search, quickswitch and
+/// backlinks, which all read `all_notes()` directly.
+pub async fn retain_notes(keep: &[String]) {
+    let cached: Vec<String> = all_notes().await.into_iter().map(|note| note.path).collect();
+    let queue = outbox().await;
+
+    for path in prune_targets(&cached, keep, &queue) {
+        remove_note(&path).await;
+    }
+}
+
+/// Which cached paths are safe to drop: not in `keep`, and not something a
+/// queued operation still needs to exist locally before it can replay.
+///
+/// The exception matters: a tree fetched while a note created (or moved)
+/// offline is still queued would otherwise delete the very thing the queued
+/// write is trying to send — the server's tree does not know about it either,
+/// precisely because the write has not reached it yet.
+fn prune_targets(cached: &[String], keep: &[String], queue: &[QueuedOp]) -> Vec<String> {
+    cached
+        .iter()
+        .filter(|path| !keep.iter().any(|kept| kept == *path))
+        .filter(|path| !is_protected(path, queue))
+        .cloned()
+        .collect()
+}
+
+fn is_protected(path: &str, queue: &[QueuedOp]) -> bool {
+    queue.iter().any(|queued| match &queued.op {
+        PendingOp::CreateNote { path: subject, .. } | PendingOp::SaveNote { path: subject, .. } => {
+            subject == path
+        }
+        PendingOp::MoveNote { to, .. } => to == path,
+        // A folder move rebases every cached note beneath it before the op is
+        // even queued (`vault::move_folder`), so what needs protecting here is
+        // where those notes now live — `to`, not `from`.
+        PendingOp::MoveFolder { to, .. } => {
+            path == to || go_notes_shared::paths::is_within(path, to)
+        }
+        PendingOp::DeleteNote { .. } | PendingOp::CreateFolder { .. } | PendingOp::DeleteFolder { .. } => {
+            false
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tree and identity
 // ---------------------------------------------------------------------------
@@ -242,4 +291,84 @@ fn decode<T: DeserializeOwned>(value: &JsValue) -> Option<T> {
 
 fn warn(message: &str, err: &JsValue) {
     web_sys::console::warn_2(&JsValue::from_str(&format!("go-notes: {message}")), err);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queued(id: u64, op: PendingOp) -> QueuedOp {
+        QueuedOp::new(id, op)
+    }
+
+    #[test]
+    fn a_note_deleted_on_another_device_stops_showing_up_in_offline_search() {
+        let cached = vec!["Kept.md".to_string(), "Deleted.md".to_string()];
+        let keep = vec!["Kept.md".to_string()];
+
+        let dropped = prune_targets(&cached, &keep, &[]);
+        assert_eq!(dropped, vec!["Deleted.md".to_string()]);
+    }
+
+    #[test]
+    fn a_note_created_offline_survives_a_tree_that_does_not_know_about_it_yet() {
+        let cached = vec!["New.md".to_string()];
+        let keep: Vec<String> = Vec::new();
+        let queue = vec![queued(
+            1,
+            PendingOp::CreateNote {
+                path: "New.md".to_string(),
+                markdown: "# New".to_string(),
+            },
+        )];
+
+        assert!(prune_targets(&cached, &keep, &queue).is_empty());
+    }
+
+    #[test]
+    fn a_note_moved_offline_is_protected_at_its_new_path_not_its_old_one() {
+        // The cache is renamed to the new path the moment the move is queued
+        // (`vault::move_note`), so nothing is ever cached under `from` any more —
+        // protecting it there would protect nothing.
+        let cached = vec!["Projects/Budget.md".to_string()];
+        let keep: Vec<String> = Vec::new();
+        let queue = vec![queued(
+            1,
+            PendingOp::MoveNote {
+                from: "Budget.md".to_string(),
+                to: "Projects/Budget.md".to_string(),
+            },
+        )];
+
+        assert!(prune_targets(&cached, &keep, &queue).is_empty());
+    }
+
+    #[test]
+    fn a_note_inside_an_offline_folder_move_is_protected_too() {
+        let cached = vec!["Archive/Projects/Reno.md".to_string()];
+        let keep: Vec<String> = Vec::new();
+        let queue = vec![queued(
+            1,
+            PendingOp::MoveFolder {
+                from: "Projects".to_string(),
+                to: "Archive/Projects".to_string(),
+            },
+        )];
+
+        assert!(prune_targets(&cached, &keep, &queue).is_empty());
+    }
+
+    #[test]
+    fn a_queued_delete_does_not_protect_anything() {
+        let cached = vec!["Gone.md".to_string()];
+        let keep: Vec<String> = Vec::new();
+        let queue = vec![queued(
+            1,
+            PendingOp::DeleteNote {
+                path: "Gone.md".to_string(),
+            },
+        )];
+
+        assert_eq!(prune_targets(&cached, &keep, &queue), vec!["Gone.md".to_string()]);
+    }
 }

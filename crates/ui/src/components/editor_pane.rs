@@ -20,9 +20,9 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 
-use crate::api::ApiFailure;
 use crate::editor::{self, EditorConfig, EditorHandle};
-use crate::state::{use_app, AppState, Conflict, ConflictOrigin};
+use crate::save;
+use crate::state::{use_app, AppState};
 use crate::vault;
 
 /// How long to wait after the last keystroke before writing to disk.
@@ -40,6 +40,9 @@ pub fn EditorPane() -> impl IntoView {
     // primitive here; none of this ever crosses a thread boundary.
     let handle: Rc<RefCell<Option<EditorHandle>>> = Rc::new(RefCell::new(None));
     let pending_save: Rc<RefCell<Option<Timeout>>> = Rc::new(RefCell::new(None));
+    // The text the pending timeout above would send, so switching tabs can
+    // flush it immediately instead of just dropping the timer.
+    let pending_text: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     // The path the editor currently holds, read inside callbacks that fire long
     // after the render that created them.
     let loaded_path: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
@@ -49,6 +52,7 @@ pub fn EditorPane() -> impl IntoView {
     Effect::new({
         let handle = handle.clone();
         let pending_save = pending_save.clone();
+        let pending_text = pending_text.clone();
         let loaded_path = loaded_path.clone();
 
         move |_| {
@@ -61,12 +65,20 @@ pub fn EditorPane() -> impl IntoView {
 
             let Some(element) = host.get() else { return };
 
-            // Switching away from a note must not leave its save queued against
-            // the newly-opened one.
+            // Switching away from a note must not leave its last edit stranded
+            // behind a timer that will never fire against it again — send it
+            // now rather than dropping it.
             pending_save.borrow_mut().take();
+            if let Some(markdown) = pending_text.borrow_mut().take() {
+                let old_path = loaded_path.borrow().clone();
+                if !old_path.is_empty() {
+                    save::flush(state, old_path, markdown);
+                }
+            }
 
             let handle = handle.clone();
             let pending_save = pending_save.clone();
+            let pending_text = pending_text.clone();
             let loaded_path = loaded_path.clone();
             let element: web_sys::HtmlElement = element.unchecked_into();
 
@@ -87,7 +99,7 @@ pub fn EditorPane() -> impl IntoView {
                 };
 
                 *loaded_path.borrow_mut() = path.clone();
-                state.set_hash(&path, note.meta.content_hash.clone());
+                save::opened(state, &path, note.meta.content_hash.clone(), note.markdown.clone());
                 state.mark_dirty(&path, false);
                 state.backlinks.set(note.backlinks.clone());
                 state.active_markdown.set(note.markdown.clone());
@@ -119,6 +131,7 @@ pub fn EditorPane() -> impl IntoView {
                         known_targets: state.known_targets(),
                         on_change: {
                             let pending_save = pending_save.clone();
+                            let pending_text = pending_text.clone();
                             let loaded_path = loaded_path.clone();
                             move |markdown: String| {
                                 let path = loaded_path.borrow().clone();
@@ -127,12 +140,17 @@ pub fn EditorPane() -> impl IntoView {
                                 }
                                 state.mark_dirty(&path, true);
                                 state.active_markdown.set(markdown.clone());
+                                *pending_text.borrow_mut() = Some(markdown.clone());
 
                                 // Replacing the timeout is the debounce: the
                                 // previous one is dropped and therefore cancelled.
                                 let scheduled = Timeout::new(AUTOSAVE_DELAY_MS, {
                                     let path = path.clone();
-                                    move || save_now(state, path.clone(), markdown.clone())
+                                    let pending_text = pending_text.clone();
+                                    move || {
+                                        pending_text.borrow_mut().take();
+                                        save::request(state, path.clone(), markdown.clone());
+                                    }
                                 });
                                 *pending_save.borrow_mut() = Some(scheduled);
                             }
@@ -215,11 +233,15 @@ pub fn EditorPane() -> impl IntoView {
             }
             spawn_local(async move {
                 if let Ok(note) = vault::read_note(state, path.clone()).await {
-                    state.set_hash(&path, note.meta.content_hash.clone());
+                    save::opened(state, &path, note.meta.content_hash.clone(), note.markdown.clone());
                     state.mark_dirty(&path, false);
                     state.active_markdown.set(note.markdown.clone());
                     if let Some(id) = id {
-                        editor::set_markdown(id, &note.markdown).await;
+                        // Not `set_markdown`: this can fire from a background
+                        // refresh while the note is still open, and rebuilding
+                        // the editor would drop the cursor for a change that,
+                        // most of the time, touched nothing the person can see.
+                        editor::patch_markdown(id, &note.markdown).await;
                     }
                 }
             });
@@ -231,6 +253,7 @@ pub fn EditorPane() -> impl IntoView {
     // but only this component holds the editor.
     Effect::new({
         let handle = handle.clone();
+        let pending_text = pending_text.clone();
         let loaded_path = loaded_path.clone();
         move |previous: Option<u32>| {
             let requested = state.save_requested.get();
@@ -245,7 +268,8 @@ pub fn EditorPane() -> impl IntoView {
                     .as_ref()
                     .map(|editor| editor.markdown())
                     .unwrap_or_default();
-                save_now(state, path, markdown);
+                pending_text.borrow_mut().take();
+                save::request(state, path, markdown);
             }
             requested
         }
@@ -320,40 +344,6 @@ fn has_files(ev: &web_sys::DragEvent) -> bool {
         .unwrap_or(false)
 }
 
-/// Writes a note, turning a lost update into a visible conflict.
-///
-/// With the server unreachable this still succeeds: the text goes into the
-/// local vault and the write joins the outbox. The tab stops being dirty
-/// because the writing *is* saved — the offline banner and the pending count
-/// are what say it has not reached the server yet.
-fn save_now(state: AppState, path: String, markdown: String) {
-    let expected = state.hash_for(&path);
-    spawn_local(async move {
-        match vault::save_note(state, path.clone(), markdown.clone(), expected).await {
-            Ok(written) => {
-                state.set_hash(&path, written.content_hash);
-                state.mark_dirty(&path, false);
-                if !written.queued {
-                    // A save can create links, so the graph and the tree may
-                    // both have changed — a new note title, a link that now
-                    // resolves. Offline there is nothing new to fetch.
-                    state.refresh_all();
-                }
-            }
-            Err(ApiFailure::Conflict(body)) => {
-                state.push_conflict(Conflict {
-                    path: path.clone(),
-                    theirs: body.current_markdown,
-                    their_hash: body.current_hash,
-                    mine: markdown,
-                    origin: ConflictOrigin::Live,
-                });
-            }
-            Err(err) => state.error(err.user_message()),
-        }
-    });
-}
-
 /// Follows a `[[wikilink]]`, offering to create the note when it does not exist.
 fn open_link(state: AppState, target: String) {
     spawn_local(async move {
@@ -383,10 +373,15 @@ fn open_link(state: AppState, target: String) {
             return;
         }
 
-        match vault::create_note(state, path, format!("# {target}\n\n")).await {
+        let markdown = format!("# {target}\n\n");
+        match vault::create_note(state, path, markdown.clone()).await {
             Ok(written) => {
                 state.refresh_all();
                 state.open_tab(written.path.clone(), written.title.clone());
+                // Gives the new tab a real `If-Match` token straight away,
+                // rather than leaving it empty until the load effect's own
+                // read of the note comes back.
+                save::opened(state, &written.path, written.content_hash, markdown);
                 state.notify("Created a new note for that link.");
             }
             Err(err) => state.error(err.user_message()),
