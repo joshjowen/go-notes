@@ -52,6 +52,13 @@ struct GraphScene {
     dragging: Option<usize>,
     panning: bool,
     last_pointer: Vec2,
+    /// Whether the pointer has travelled since it went down.
+    ///
+    /// A tap and a pan both end in a `click`, so without this, panning the
+    /// canvas with a finger and happening to lift over a node opens that note.
+    /// Harmless with a mouse, where a drag is deliberate; on a phone the whole
+    /// gesture *is* a drag.
+    moved: bool,
     /// Set once after the first layout settles, to frame the whole graph.
     fitted: bool,
 }
@@ -70,6 +77,7 @@ impl GraphScene {
             },
             hovered: None,
             dragging: None,
+            moved: false,
             panning: false,
             last_pointer: Vec2::ZERO,
             fitted: false,
@@ -157,8 +165,23 @@ pub fn GraphView() -> impl IntoView {
                 };
                 match api::graph(scope, focus.as_deref(), depth_value).await {
                     Ok(data) => {
+                        crate::offline::net::report_reachable(state);
                         node_count.set(data.nodes.len());
                         scene.borrow_mut().load(data);
+                    }
+                    // The graph is the one view with no offline answer: it is
+                    // built from the link table for the *whole* vault, and this
+                    // device only holds the notes it has opened. A partial graph
+                    // would not be a smaller truth, it would be a wrong one —
+                    // notes shown as unlinked because their neighbours are
+                    // simply not here.
+                    Err(err) if err.is_offline() => {
+                        crate::offline::net::report_unreachable(state);
+                        node_count.set(0);
+                        scene.borrow_mut().load(go_notes_shared::GraphResponse {
+                            nodes: Vec::new(),
+                            edges: Vec::new(),
+                        });
                     }
                     Err(err) => state.error(err.user_message()),
                 }
@@ -221,6 +244,12 @@ pub fn GraphView() -> impl IntoView {
     });
 
     // --- pointer interaction ------------------------------------------------
+    //
+    // Pointer events rather than mouse events, so a finger drags a node and
+    // pans the canvas exactly as a mouse does — one set of handlers for both,
+    // which is the whole reason the API exists. The canvas carries
+    // `touch-action: none` so the browser stops trying to scroll the page out
+    // from under the gesture.
 
     let pointer_position = |ev: &web_sys::MouseEvent| -> (Vec2, f32, f32) {
         let target: web_sys::Element = ev.target().unwrap().unchecked_into();
@@ -241,6 +270,15 @@ pub fn GraphView() -> impl IntoView {
             let (pointer, width, height) = pointer_position(&ev);
             let mut scene = scene.borrow_mut();
             let world = scene.camera.to_world(pointer, width, height);
+
+            // A few pixels of travel is a steady hand on a tap, not a drag.
+            if scene.dragging.is_some() || scene.panning {
+                let dx = pointer.x - scene.last_pointer.x;
+                let dy = pointer.y - scene.last_pointer.y;
+                if dx.abs() + dy.abs() > 3.0 {
+                    scene.moved = true;
+                }
+            }
 
             if let Some(index) = scene.dragging {
                 scene.simulation.set_position(index, world);
@@ -273,6 +311,7 @@ pub fn GraphView() -> impl IntoView {
             let radius = 14.0 / scene.camera.scale;
 
             scene.last_pointer = pointer;
+            scene.moved = false;
             match scene.simulation.node_at(world, radius) {
                 Some(index) => {
                     scene.dragging = Some(index);
@@ -303,6 +342,9 @@ pub fn GraphView() -> impl IntoView {
             let (pointer, width, height) = pointer_position(&ev);
             let (path, title, unresolved) = {
                 let scene = scene.borrow();
+                if scene.moved {
+                    return;
+                }
                 let world = scene.camera.to_world(pointer, width, height);
                 let radius = 14.0 / scene.camera.scale;
                 match scene.simulation.node_at(world, radius) {
@@ -336,6 +378,22 @@ pub fn GraphView() -> impl IntoView {
         }
     };
 
+    // Zoom, for anyone without a scroll wheel. A pinch would be nicer and needs
+    // two tracked pointers and a gesture state machine; two buttons work today
+    // and are also the only way to zoom from a keyboard.
+    let zoom_by = {
+        let scene = scene.clone();
+        move |factor: f32| {
+            let mut scene = scene.borrow_mut();
+            scene.camera.scale = (scene.camera.scale * factor).clamp(0.05, 6.0);
+        }
+    };
+    let zoom_in = {
+        let zoom_by = zoom_by.clone();
+        move |_| zoom_by(1.25)
+    };
+    let zoom_out = move |_| zoom_by(1.0 / 1.25);
+
     let fit_now = {
         let scene = scene.clone();
         move |_| {
@@ -353,10 +411,17 @@ pub fn GraphView() -> impl IntoView {
         <div class="gn-graph">
             <canvas
                 node_ref=canvas_ref
-                on:mousemove=on_move
-                on:mousedown=on_down
-                on:mouseup=on_up.clone()
-                on:mouseleave=on_up
+                on:pointermove=move |ev: web_sys::PointerEvent| on_move(ev.unchecked_into())
+                on:pointerdown=move |ev: web_sys::PointerEvent| on_down(ev.unchecked_into())
+                on:pointerup={
+                    let on_up = on_up.clone();
+                    move |ev: web_sys::PointerEvent| on_up(ev.unchecked_into())
+                }
+                on:pointercancel={
+                    let on_up = on_up.clone();
+                    move |ev: web_sys::PointerEvent| on_up(ev.unchecked_into())
+                }
+                on:pointerleave=move |ev: web_sys::PointerEvent| on_up(ev.unchecked_into())
                 on:click=on_click
                 on:wheel=on_wheel
             ></canvas>
@@ -393,10 +458,17 @@ pub fn GraphView() -> impl IntoView {
                     "Fit to view"
                 </button>
 
+                <span class="gn-graph-zoom">
+                    <button title="Zoom out" aria-label="Zoom out" on:click=zoom_out>"−"</button>
+                    <button title="Zoom in" aria-label="Zoom in" on:click=zoom_in>"+"</button>
+                </span>
+
                 <span class="gn-graph-count">
                     {move || {
                         if loading.get() {
                             "Loading…".to_string()
+                        } else if state.local_only() {
+                            "Needs the server".to_string()
                         } else {
                             let count = node_count.get();
                             format!("{count} note{}", if count == 1 { "" } else { "s" })
@@ -407,7 +479,14 @@ pub fn GraphView() -> impl IntoView {
                 // Canvas interactions are invisible until someone tries them, so
                 // say what they are rather than leaving people to guess.
                 <span class="gn-graph-hint">
-                    "Drag to pan · Scroll to zoom · Click a note to open it"
+                    {move || {
+                        if state.local_only() {
+                            "The link graph is built by the server from the whole vault, so it is \
+                             unavailable offline. Editing, search and backlinks still work."
+                        } else {
+                            "Drag to pan · Scroll to zoom · Click a note to open it"
+                        }
+                    }}
                 </span>
             </div>
         </div>

@@ -20,9 +20,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 
-use crate::api::{self, ApiFailure};
+use crate::api::ApiFailure;
 use crate::editor::{self, EditorConfig, EditorHandle};
-use crate::state::{use_app, AppState, Conflict};
+use crate::state::{use_app, AppState, Conflict, ConflictOrigin};
+use crate::vault;
 
 /// How long to wait after the last keystroke before writing to disk.
 ///
@@ -70,10 +71,17 @@ pub fn EditorPane() -> impl IntoView {
             let element: web_sys::HtmlElement = element.unchecked_into();
 
             spawn_local(async move {
-                let note = match api::read_note(path.clone()).await {
+                let note = match vault::read_note(state, path.clone()).await {
                     Ok(note) => note,
                     Err(err) => {
                         state.error(err.user_message());
+                        // Close the tab rather than leaving it focused on a note
+                        // that could not be read. The editor still holds the
+                        // previous document, and a tab that looks like `B.md`
+                        // over the text of `A.md` would send anything typed into
+                        // it to `A.md`. Far likelier offline, where opening a
+                        // note this device has never seen simply fails.
+                        state.close_tab_with_path(&path);
                         return;
                     }
                 };
@@ -131,18 +139,14 @@ pub fn EditorPane() -> impl IntoView {
                         },
                         on_wikilink_query: move |query: String| {
                             editor::promise_from_future(async move {
-                                match api::quickswitch(query).await {
-                                    Ok(items) => {
-                                        serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
-                                    }
-                                    Err(_) => "[]".to_string(),
-                                }
+                                let items = vault::quickswitch(state, query).await;
+                                serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
                             })
                         },
                         on_open_link: move |target: String| open_link(state, target),
                         on_upload: move |file: web_sys::File| {
                             editor::promise_from_future(async move {
-                                match api::upload_attachment(file).await {
+                                match vault::upload_attachment(state, file).await {
                                     Ok(response) => response.url,
                                     Err(err) => {
                                         state.error(err.user_message());
@@ -191,33 +195,35 @@ pub fn EditorPane() -> impl IntoView {
         }
     });
 
-    // Resolving a conflict by taking the version from disk has to push that text
-    // into the editor, which only this component can do.
+    // Re-reading the open note has to push text into the editor, which only this
+    // component can do. Asked for after a sync brings a newer version down, and
+    // when a conflict is resolved in favour of the server's copy.
     Effect::new({
         let handle = handle.clone();
         let loaded_path = loaded_path.clone();
-        move |_| {
-            let Some(conflict) = state.conflict.get() else {
-                return;
-            };
-            // A `None` marker in `theirs` is how the dialog signals "load theirs".
-            if conflict.theirs != TAKE_THEIRS_MARKER {
-                return;
+        move |previous: Option<u32>| {
+            let requested = state.reload_requested.get();
+            // The first run is the mount, not a request.
+            if previous.is_none() {
+                return requested;
             }
-            state.conflict.set(None);
 
             let id = handle.borrow().as_ref().map(|editor| editor.id());
             let path = loaded_path.borrow().clone();
+            if path.is_empty() {
+                return requested;
+            }
             spawn_local(async move {
-                if let Ok(note) = api::read_note(path.clone()).await {
+                if let Ok(note) = vault::read_note(state, path.clone()).await {
                     state.set_hash(&path, note.meta.content_hash.clone());
                     state.mark_dirty(&path, false);
+                    state.active_markdown.set(note.markdown.clone());
                     if let Some(id) = id {
                         editor::set_markdown(id, &note.markdown).await;
                     }
-                    state.notify("Loaded the version from disk.");
                 }
             });
+            requested
         }
     });
 
@@ -287,7 +293,7 @@ pub fn EditorPane() -> impl IntoView {
                     for index in 0..files.length() {
                         let Some(file) = files.get(index) else { continue };
                         spawn_local(async move {
-                            match api::upload_attachment(file).await {
+                            match vault::upload_attachment(state, file).await {
                                 Ok(response) => {
                                     let snippet = if response.is_image {
                                         format!("![{}]({})", response.path, response.url)
@@ -308,9 +314,6 @@ pub fn EditorPane() -> impl IntoView {
     }
 }
 
-/// Sentinel written into `Conflict::theirs` to ask the editor to reload the file.
-pub const TAKE_THEIRS_MARKER: &str = "\u{0}__go_notes_take_theirs__";
-
 fn has_files(ev: &web_sys::DragEvent) -> bool {
     ev.data_transfer()
         .map(|dt| dt.types().includes(&wasm_bindgen::JsValue::from_str("Files"), 0))
@@ -318,24 +321,33 @@ fn has_files(ev: &web_sys::DragEvent) -> bool {
 }
 
 /// Writes a note, turning a lost update into a visible conflict.
+///
+/// With the server unreachable this still succeeds: the text goes into the
+/// local vault and the write joins the outbox. The tab stops being dirty
+/// because the writing *is* saved — the offline banner and the pending count
+/// are what say it has not reached the server yet.
 fn save_now(state: AppState, path: String, markdown: String) {
     let expected = state.hash_for(&path);
     spawn_local(async move {
-        match api::save_note(path.clone(), markdown.clone(), expected).await {
-            Ok(response) => {
-                state.set_hash(&path, response.meta.content_hash.clone());
+        match vault::save_note(state, path.clone(), markdown.clone(), expected).await {
+            Ok(written) => {
+                state.set_hash(&path, written.content_hash);
                 state.mark_dirty(&path, false);
-                // A save can create links, so the graph and the tree may both
-                // have changed — a new note title, a link that now resolves.
-                state.refresh_all();
+                if !written.queued {
+                    // A save can create links, so the graph and the tree may
+                    // both have changed — a new note title, a link that now
+                    // resolves. Offline there is nothing new to fetch.
+                    state.refresh_all();
+                }
             }
             Err(ApiFailure::Conflict(body)) => {
-                state.conflict.set(Some(Conflict {
+                state.push_conflict(Conflict {
                     path: path.clone(),
                     theirs: body.current_markdown,
                     their_hash: body.current_hash,
                     mine: markdown,
-                }));
+                    origin: ConflictOrigin::Live,
+                });
             }
             Err(err) => state.error(err.user_message()),
         }
@@ -345,7 +357,7 @@ fn save_now(state: AppState, path: String, markdown: String) {
 /// Follows a `[[wikilink]]`, offering to create the note when it does not exist.
 fn open_link(state: AppState, target: String) {
     spawn_local(async move {
-        let candidates = api::quickswitch(target.clone()).await.unwrap_or_default();
+        let candidates = vault::quickswitch(state, target.clone()).await;
 
         // Prefer an exact title match over a mere substring hit, so following
         // `[[Budget]]` never lands on "Budget Archive" because it sorted first.
@@ -371,10 +383,10 @@ fn open_link(state: AppState, target: String) {
             return;
         }
 
-        match api::create_note(path, format!("# {target}\n\n")).await {
-            Ok(response) => {
+        match vault::create_note(state, path, format!("# {target}\n\n")).await {
+            Ok(written) => {
                 state.refresh_all();
-                state.open_tab(response.meta.path.clone(), response.meta.title.clone());
+                state.open_tab(written.path.clone(), written.title.clone());
                 state.notify("Created a new note for that link.");
             }
             Err(err) => state.error(err.user_message()),

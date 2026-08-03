@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Go-Notes">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8b7af5" />
+      <stop offset="1" stop-color="#5a48d6" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="url(#g)" />
+  <path d="M30 20 H54 L70 36 V80 H30 Z" fill="#ffffff" />
+  <path d="M54 20 L70 36 H54 Z" fill="#d8d2fa" />
+  <g stroke="#6e5ae8" stroke-width="5" stroke-linecap="round">
+    <path d="M37.5 40 H62.5" />
+    <path d="M37.5 52 H62.5" />
+    <path d="M37.5 64 H55.5" />
+  </g>
+</svg>

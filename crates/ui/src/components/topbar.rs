@@ -14,7 +14,7 @@ use leptos::task::spawn_local;
 
 use crate::api;
 use crate::components::tree::create_note_in;
-use crate::state::{use_app, LeftPanel, MainView, Palette, RightPanel};
+use crate::state::{use_app, LeftPanel, MainView, Palette, RightPanel, SyncPhase};
 
 #[component]
 pub fn TopBar() -> impl IntoView {
@@ -25,6 +25,17 @@ pub fn TopBar() -> impl IntoView {
     view! {
         <header class="gn-topbar">
             <div class="gn-topbar-group">
+                // The drawer toggle only exists on a narrow screen; on a wide
+                // one the sidebar is always there and the stylesheet hides it.
+                <button
+                    class="gn-tool-button gn-narrow-only"
+                    title="Files"
+                    aria-label="Files"
+                    on:click=move |_| state.drawer_open.update(|open| *open = !*open)
+                >
+                    <span class="gn-tool-icon">"☰"</span>
+                </button>
+
                 <span class="gn-brand">"Go-Notes"</span>
 
                 <button
@@ -37,7 +48,7 @@ pub fn TopBar() -> impl IntoView {
                 </button>
 
                 <button
-                    class="gn-tool-button"
+                    class="gn-tool-button gn-wide-only"
                     title="Search all notes"
                     on:click=move |_| {
                         state.left_panel.set(LeftPanel::Search);
@@ -81,8 +92,24 @@ pub fn TopBar() -> impl IntoView {
             </div>
 
             <div class="gn-topbar-group gn-topbar-right">
+                // Shown only while the browser is actually holding an install
+                // offer, so it is never a button that explains it cannot do
+                // anything.
+                <Show when=move || state.installable.get()>
+                    <button
+                        class="gn-tool-button gn-install-button"
+                        title="Install Go-Notes as an app on this device"
+                        on:click=move |_| crate::pwa::install(state)
+                    >
+                        <span class="gn-tool-icon">"⤓"</span>
+                        <span class="gn-tool-label">"Install"</span>
+                    </button>
+                </Show>
+
+                <SyncStatus />
+
                 <button
-                    class="gn-tool-button"
+                    class="gn-tool-button gn-wide-only"
                     title=move || {
                         if state.right_panel.get() == RightPanel::Hidden {
                             "Show the backlinks panel"
@@ -105,7 +132,7 @@ pub fn TopBar() -> impl IntoView {
                 </button>
 
                 <button
-                    class="gn-tool-button"
+                    class="gn-tool-button gn-wide-only"
                     title="Theme"
                     on:click=move |_| state.theme_dialog_open.set(true)
                 >
@@ -121,7 +148,7 @@ pub fn TopBar() -> impl IntoView {
                     <span class="gn-tool-icon">"⋯"</span>
                 </button>
 
-                <div class="gn-user-menu">
+                <div class="gn-user-menu gn-wide-only">
                     <span class="gn-username" title=move || {
                         state
                             .me
@@ -145,8 +172,130 @@ pub fn TopBar() -> impl IntoView {
     }
 }
 
+/// The connection and sync indicator, and the detail behind it.
+///
+/// Always visible rather than only when something is wrong. "Is my writing
+/// actually saved somewhere other than this laptop?" is a question worth being
+/// able to answer at a glance, and an indicator that only appears in trouble
+/// teaches people to distrust its absence.
+#[component]
+fn SyncStatus() -> impl IntoView {
+    let state = use_app();
+    let open = RwSignal::new(false);
+
+    let label = move || crate::offline::net::summary(&state);
+    let attention = move || state.sync.get() == SyncPhase::Blocked || state.local_only();
+
+    view! {
+        <div class="gn-sync">
+            <button
+                class="gn-sync-chip"
+                class:gn-sync-offline=move || state.local_only()
+                class:gn-sync-attention=attention
+                class:gn-sync-busy=move || state.sync.get() == SyncPhase::Syncing
+                title="Connection and sync status"
+                on:click=move |_| open.update(|shown| *shown = !*shown)
+            >
+                <span class="gn-sync-dot"></span>
+                <span class="gn-sync-label">{label}</span>
+            </button>
+
+            <Show when=move || open.get()>
+                <div class="gn-sync-panel" on:click=move |ev| ev.stop_propagation()>
+                    <p class="gn-panel-title">
+                        {move || {
+                            if state.local_only() {
+                                "Working offline"
+                            } else {
+                                "Connected to the server"
+                            }
+                        }}
+                    </p>
+
+                    {move || {
+                        state
+                            .sync_message
+                            .get()
+                            .map(|message| view! { <p class="gn-form-error">{message}</p> })
+                    }}
+
+                    <Show when=move || !state.offline_storage.get()>
+                        <p class="gn-empty">
+                            "This browser is not giving the app any storage, so nothing is being
+                             kept for offline use. A private window, or a setting that blocks site
+                             data, will do that."
+                        </p>
+                    </Show>
+
+                    {move || {
+                        let queued = state.pending.get();
+                        if queued.is_empty() {
+                            return view! {
+                                <p class="gn-empty">"Everything here has reached the server."</p>
+                            }
+                                .into_any();
+                        }
+                        view! {
+                            <div class="gn-sync-list">
+                                {queued
+                                    .into_iter()
+                                    .map(|op| {
+                                        let id = op.id;
+                                        let failed = op.last_error.clone();
+                                        view! {
+                                            <div class="gn-sync-item">
+                                                <span class="gn-sync-item-label">
+                                                    {op.op.describe()}
+                                                </span>
+                                                {failed
+                                                    .map(|reason| {
+                                                        view! {
+                                                            <span class="gn-sync-item-error">
+                                                                {reason}
+                                                            </span>
+                                                            <button
+                                                                class="gn-tool-button"
+                                                                title="Discard this change"
+                                                                on:click=move |_| discard(state, id)
+                                                            >
+                                                                "Discard"
+                                                            </button>
+                                                        }
+                                                    })}
+                                            </div>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </div>
+                        }
+                            .into_any()
+                    }}
+
+                    <div class="gn-dialog-actions">
+                        <button on:click=move |_| crate::vault::sync_now(state)>"Sync now"</button>
+                        <button on:click=move |_| open.set(false)>"Close"</button>
+                    </div>
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+/// Throws away a queued change the server refused.
+fn discard(state: crate::state::AppState, id: u64) {
+    spawn_local(async move {
+        state.pending.set(crate::offline::cache::drop_op(id).await);
+        state.notify("Discarded that change.");
+    });
+}
+
 fn sign_out(state: crate::state::AppState) {
     spawn_local(async move {
+        // Wipe what this browser holds before ending the session, so signing out
+        // on a shared machine really does leave nothing behind.
+        crate::offline::cache::forget_everything().await;
+        state.pending.set(Vec::new());
+
         match api::logout().await {
             Ok(response) => {
                 // With an identity provider that supports it, sign out there too

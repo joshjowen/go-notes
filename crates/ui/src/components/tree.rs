@@ -9,8 +9,8 @@ use go_notes_shared::{paths, TreeNode};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::api;
 use crate::state::{title_of, use_app, AppState};
+use crate::vault;
 
 /// Where a context menu is open, and on what.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +123,7 @@ fn TreeEntry(
             let folder_path = path.clone();
             let toggle_path = path.clone();
             let menu_path = path.clone();
+            let menu_button_path = path.clone();
             let drop_path = path.clone();
 
             view! {
@@ -137,7 +138,7 @@ fn TreeEntry(
                             open.set(next);
                             let path = toggle_path.clone();
                             spawn_local(async move {
-                                let _ = api::set_folder_collapsed(path, !next).await;
+                                vault::set_folder_collapsed(state, path, !next).await;
                             });
                         }
                         on:contextmenu=move |ev| {
@@ -190,6 +191,27 @@ fn TreeEntry(
                             "▸"
                         </span>
                         <span class="gn-tree-name">{name}</span>
+                        <button
+                            class="gn-row-menu"
+                            title="Actions"
+                            aria-label="Actions"
+                            on:click={
+                                let path = menu_button_path.clone();
+                                move |ev| {
+                                    ev.stop_propagation();
+                                    menu.set(
+                                        Some(MenuTarget {
+                                            path: path.clone(),
+                                            is_folder: true,
+                                            x: ev.client_x(),
+                                            y: ev.client_y(),
+                                        }),
+                                    );
+                                }
+                            }
+                        >
+                            "⋯"
+                        </button>
                     </div>
 
                     <Show when=move || open.get()>
@@ -212,6 +234,7 @@ fn TreeEntry(
             let open_path = path.clone();
             let open_title = title.clone();
             let menu_path = path.clone();
+            let menu_button_path = path.clone();
             let drag_path = path.clone();
             let is_active = {
                 let path = path.clone();
@@ -244,6 +267,31 @@ fn TreeEntry(
                         on:dragend=move |_| dragging.set(None)
                     >
                         <span class="gn-tree-name">{title}</span>
+                        // Long-pressing a row raises a `contextmenu` event on
+                        // most touch browsers, but not reliably and never
+                        // discoverably. The stylesheet shows this button only
+                        // where there is no mouse to right-click with.
+                        <button
+                            class="gn-row-menu"
+                            title="Actions"
+                            aria-label="Actions"
+                            on:click={
+                                let path = menu_button_path.clone();
+                                move |ev| {
+                                    ev.stop_propagation();
+                                    menu.set(
+                                        Some(MenuTarget {
+                                            path: path.clone(),
+                                            is_folder: false,
+                                            x: ev.client_x(),
+                                            y: ev.client_y(),
+                                        }),
+                                    );
+                                }
+                            }
+                        >
+                            "⋯"
+                        </button>
                     </div>
                 </li>
             }
@@ -266,6 +314,7 @@ fn ContextMenu(menu: RwSignal<Option<MenuTarget>>) -> impl IntoView {
             let for_new_note = target.path.clone();
             let for_new_folder = target.path.clone();
             let for_rename = target.path.clone();
+            let for_move = target.path.clone();
             let for_delete = target.path.clone();
 
             let folder_items = is_folder.then(|| {
@@ -289,6 +338,11 @@ fn ContextMenu(menu: RwSignal<Option<MenuTarget>>) -> impl IntoView {
                         rename_entry(state, &for_rename, is_folder);
                         menu.set(None);
                     }>"Rename…"</button>
+
+                    <button on:click=move |_| {
+                        move_to_folder(state, &for_move, is_folder);
+                        menu.set(None);
+                    }>"Move…"</button>
 
                     <button
                         class="gn-danger"
@@ -321,7 +375,14 @@ fn prompt(message: &str, default: &str) -> Option<String> {
     }
 }
 
-fn confirm(message: &str) -> bool {
+/// Like [`prompt`], but an empty answer is an answer rather than a cancellation.
+fn prompt_allowing_empty(message: &str, default: &str) -> Option<String> {
+    let window = web_sys::window()?;
+    let answer = window.prompt_with_message_and_default(message, default).ok()??;
+    Some(answer.trim().to_string())
+}
+
+pub fn confirm(message: &str) -> bool {
     web_sys::window()
         .and_then(|window| window.confirm_with_message(message).ok())
         .unwrap_or(false)
@@ -340,10 +401,14 @@ pub fn create_note_in(state: AppState, folder: &str) {
 
     let path = paths::join(folder, &format!("{name}.md"));
     spawn_local(async move {
-        match api::create_note(path.clone(), format!("# {}\n\n", title_of(&path))).await {
-            Ok(response) => {
+        let markdown = format!("# {}\n\n", title_of(&path));
+        match vault::create_note(state, path.clone(), markdown).await {
+            Ok(written) => {
                 state.refresh_all();
-                state.open_tab(response.meta.path.clone(), response.meta.title.clone());
+                state.open_tab(written.path.clone(), written.title.clone());
+                if written.queued {
+                    state.notify("Created on this device. It will reach the server when the connection is back.");
+                }
             }
             Err(err) => state.error(err.user_message()),
         }
@@ -361,8 +426,8 @@ pub fn create_folder_in(state: AppState, parent: &str) {
 
     let path = paths::join(parent, &name);
     spawn_local(async move {
-        match api::create_folder(path).await {
-            Ok(()) => state.refresh_tree(),
+        match vault::create_folder(state, path).await {
+            Ok(_) => state.refresh_tree(),
             Err(err) => state.error(err.user_message()),
         }
     });
@@ -393,6 +458,40 @@ fn rename_entry(state: AppState, path: &str, is_folder: bool) {
     move_entry_inner(state, path.to_string(), target, is_folder);
 }
 
+/// Moves an entry by asking for the destination folder.
+///
+/// Dragging a note into a folder needs a pointer that can hover, which a finger
+/// cannot — so on a phone this is the only way to reorganise a vault. It takes
+/// a folder path rather than a full path because that is the operation people
+/// mean: keep the name, change where it lives.
+fn move_to_folder(state: AppState, path: &str, is_folder: bool) {
+    let current = paths::parent_of(path);
+    // Not `prompt`: an empty answer means the top level here, and that helper
+    // cannot tell an empty answer from a cancelled one — which would turn
+    // "cancel" into "move this to the root".
+    let Some(destination) = prompt_allowing_empty(
+        "Move to which folder? Leave empty for the top level.",
+        current,
+    ) else {
+        return;
+    };
+
+    let destination = destination.trim_matches('/').to_string();
+    if !destination.is_empty() {
+        if let Err(err) = paths::validate_folder_path(&destination) {
+            state.error(err.to_string());
+            return;
+        }
+    }
+    if is_folder && (destination == path || paths::is_within(&destination, path)) {
+        state.error("A folder cannot be moved inside itself.");
+        return;
+    }
+
+    let target = paths::join(&destination, paths::basename(path));
+    move_entry_inner(state, path.to_string(), target, is_folder);
+}
+
 /// Moves an entry into a folder, keeping its name.
 fn move_entry(state: AppState, from: String, into_folder: String) {
     let name = paths::basename(&from).to_string();
@@ -411,25 +510,24 @@ fn move_entry_inner(state: AppState, from: String, to: String, is_folder: bool) 
     }
     spawn_local(async move {
         let result = if is_folder {
-            api::move_folder(from.clone(), to.clone()).await
+            vault::move_folder(state, from.clone(), to.clone()).await
         } else {
-            api::move_note(from.clone(), to.clone()).await
+            vault::move_note(state, from.clone(), to.clone()).await
         };
 
         match result {
-            Ok(response) => {
-                state.rename_tab(&from, &response.to);
+            Ok((moved_to, links_rewritten)) => {
+                state.rename_tab(&from, &moved_to);
                 state.refresh_all();
-                if response.links_rewritten > 0 {
-                    let plural = if response.links_rewritten == 1 {
-                        "note"
-                    } else {
-                        "notes"
-                    };
-                    state.notify(format!(
-                        "Moved. Updated links in {} {plural}.",
-                        response.links_rewritten
-                    ));
+                if links_rewritten > 0 {
+                    let plural = if links_rewritten == 1 { "note" } else { "notes" };
+                    state.notify(format!("Moved. Updated links in {links_rewritten} {plural}."));
+                } else if state.local_only() {
+                    // Offline the rename happens here and the links are left
+                    // alone; the server rewrites them when the move is replayed,
+                    // which is worth saying rather than leaving someone to
+                    // wonder why their links did not follow.
+                    state.notify("Moved on this device. Links elsewhere are rewritten when this syncs.");
                 } else {
                     state.notify("Moved.");
                 }
@@ -450,16 +548,20 @@ fn delete_entry(state: AppState, path: &str, is_folder: bool) {
     let path = path.to_string();
     spawn_local(async move {
         let result = if is_folder {
-            api::delete_folder(path.clone()).await
+            vault::delete_folder(state, path.clone()).await
         } else {
-            api::delete_note(path.clone()).await
+            vault::delete_note(state, path.clone()).await
         };
 
         match result {
-            Ok(()) => {
+            Ok(queued) => {
                 state.close_tabs_under(&path);
                 state.refresh_all();
-                state.notify("Moved to trash.");
+                state.notify(if queued {
+                    "Removed here. It goes to the vault's trash when this syncs."
+                } else {
+                    "Moved to trash."
+                });
             }
             Err(err) => state.error(err.user_message()),
         }

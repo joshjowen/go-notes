@@ -17,11 +17,23 @@ use serde::de::DeserializeOwned;
 /// Everything that can go wrong with a request, in the shapes callers act on.
 #[derive(Debug, Clone)]
 pub enum ApiFailure {
+    /// The request never reached the server: no network, the server is down, or
+    /// a proxy in between is not answering.
+    ///
+    /// Distinct from every other variant on purpose. This is the one failure
+    /// that means "try again later, and work locally in the meantime"; the rest
+    /// mean the server considered the request and declined it, and retrying
+    /// unchanged would only fail again.
+    Offline(String),
     /// The session expired or was never established.
     Unauthenticated,
     /// A save lost its optimistic-concurrency check. Carries the current file so
     /// the editor can offer a choice without another round trip.
     Conflict(ConflictBody),
+    /// Something is already at that path.
+    AlreadyExists(String),
+    /// Nothing is at that path.
+    NotFound,
     /// Anything else, with a message safe to show the user.
     Message(String),
 }
@@ -29,17 +41,33 @@ pub enum ApiFailure {
 impl ApiFailure {
     pub fn user_message(&self) -> String {
         match self {
+            ApiFailure::Offline(_) => "The server could not be reached.".into(),
             ApiFailure::Unauthenticated => "Your session has expired. Please sign in again.".into(),
             ApiFailure::Conflict(_) => "This note changed on disk since you opened it.".into(),
+            ApiFailure::AlreadyExists(message) => message.clone(),
+            ApiFailure::NotFound => "That is no longer there.".into(),
             ApiFailure::Message(message) => message.clone(),
         }
+    }
+
+    /// True when the request never got an answer, so the same request is worth
+    /// queueing rather than reporting as an error.
+    pub fn is_offline(&self) -> bool {
+        matches!(self, ApiFailure::Offline(_))
     }
 }
 
 pub type ApiResult<T> = Result<T, ApiFailure>;
 
 fn network_error(err: gloo_net::Error) -> ApiFailure {
-    ApiFailure::Message(format!("Could not reach the server: {err}"))
+    ApiFailure::Offline(format!("could not reach the server: {err}"))
+}
+
+/// A request body that could not be built. Distinct from [`network_error`]
+/// because it is a bug rather than an outage, and queueing it for later would
+/// only fail again in exactly the same way.
+fn encode_error(err: gloo_net::Error) -> ApiFailure {
+    ApiFailure::Message(format!("Could not build the request: {err}"))
 }
 
 /// Turns a response into either the decoded body or a typed failure.
@@ -67,13 +95,20 @@ async fn failure_from(response: Response) -> ApiFailure {
         return ApiFailure::Unauthenticated;
     }
 
-    // 409 on a save carries the note as it currently exists on disk.
+    if status == 404 {
+        return ApiFailure::NotFound;
+    }
+
+    // 409 on a save carries the note as it currently exists on disk. The other
+    // 409 — something is already at that path — matters to the sync layer,
+    // which replays a queued create against a server that may have grown the
+    // same note in the meantime.
     if status == 409 {
         if let Ok(body) = response.json::<ConflictBody>().await {
             if body.code == "conflict" {
                 return ApiFailure::Conflict(body);
             }
-            return ApiFailure::Message(body.message);
+            return ApiFailure::AlreadyExists(body.message);
         }
         return ApiFailure::Message("That conflicts with something already there.".into());
     }
@@ -138,7 +173,7 @@ pub async fn me() -> ApiResult<Me> {
 pub async fn login(username: String, password: String) -> ApiResult<Me> {
     let response = Request::post("/api/auth/login")
         .json(&LoginRequest { username, password })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -173,7 +208,7 @@ pub async fn tree() -> ApiResult<TreeNode> {
 pub async fn create_folder(path: String) -> ApiResult<()> {
     let response = Request::post("/api/folders")
         .json(&CreateFolderRequest { path })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -183,7 +218,7 @@ pub async fn create_folder(path: String) -> ApiResult<()> {
 pub async fn move_folder(from: String, to: String) -> ApiResult<MoveResponse> {
     let response = Request::post("/api/folders/move")
         .json(&MoveRequest { from, to })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -201,7 +236,7 @@ pub async fn delete_folder(path: String) -> ApiResult<()> {
 pub async fn set_folder_collapsed(path: String, collapsed: bool) -> ApiResult<()> {
     let response = Request::post("/api/folders/state")
         .json(&FolderStateRequest { path, collapsed })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -233,7 +268,7 @@ pub async fn save_note(
     let response = Request::put(&format!("/api/notes/{}", encode_path(&path)))
         .header(IF_MATCH_HEADER, &expected_hash)
         .json(&SaveNoteRequest { markdown })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -243,7 +278,7 @@ pub async fn save_note(
 pub async fn create_note(path: String, markdown: String) -> ApiResult<SaveNoteResponse> {
     let response = Request::post("/api/notes")
         .json(&CreateNoteRequest { path, markdown })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -270,7 +305,7 @@ pub async fn backlinks(path: String) -> ApiResult<Vec<go_notes_shared::Backlink>
 pub async fn move_note(from: String, to: String) -> ApiResult<MoveResponse> {
     let response = Request::post("/api/notes/move")
         .json(&MoveRequest { from, to })
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;
@@ -338,7 +373,7 @@ pub async fn upload_attachment(file: web_sys::File) -> ApiResult<AttachmentRespo
 
     let response = Request::post("/api/attachments")
         .body(form)
-        .map_err(network_error)?
+        .map_err(encode_error)?
         .send()
         .await
         .map_err(network_error)?;

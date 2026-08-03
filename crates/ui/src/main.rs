@@ -7,8 +7,11 @@ mod api;
 mod app;
 mod components;
 mod editor;
+mod offline;
+mod pwa;
 mod state;
 mod theme;
+mod vault;
 
 fn main() {
     // Turns a Rust panic into a readable browser console trace instead of the
