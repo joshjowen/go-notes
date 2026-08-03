@@ -29,6 +29,7 @@ pub mod tree;
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 use crate::state::AppState;
 
@@ -68,16 +69,48 @@ pub async fn init(state: AppState) {
 
 /// Registers the service worker that caches the application shell.
 ///
-/// Browsers only allow service workers on a secure context — HTTPS, or
-/// `localhost` for development. On a plain-HTTP deployment registration fails,
-/// which is not fatal: notes, edits and the outbox still work offline for as
-/// long as the tab lives, and only *reloading* while disconnected is lost. The
-/// failure is logged rather than shown, because it is a property of how the
-/// server is deployed and not something the person writing a note can act on.
+/// Browsers only expose service workers on a secure context — HTTPS, or
+/// `localhost` for development. Everywhere else `navigator.serviceWorker` is
+/// not merely unusable, it is **undefined**, and reaching through it throws a
+/// `TypeError` that WebAssembly cannot catch: the exception unwinds out of the
+/// start-up task and takes the rest of it — the identity check, the render —
+/// with it. That is what "the app sits on Loading…" looked like on a
+/// plain-HTTP deployment, so the property is tested for rather than assumed.
+///
+/// Its absence is not fatal on its own. Notes, edits and the outbox all still
+/// work offline for as long as the tab lives; only *reloading* while
+/// disconnected is lost. That is a property of how the server is deployed and
+/// not something the person writing a note can act on, so it goes to the
+/// console rather than on screen.
 fn register_service_worker() {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let container = window.navigator().service_worker();
-    let _ = container.register("/sw.js");
+
+    let navigator = window.navigator();
+    let container = js_sys::Reflect::get(&navigator, &JsValue::from_str("serviceWorker"));
+    let available = container
+        .as_ref()
+        .is_ok_and(|value| !value.is_undefined() && !value.is_null());
+
+    if !available {
+        web_sys::console::info_1(&JsValue::from_str(
+            "go-notes: no service worker here (it needs HTTPS or localhost), \
+             so reloading while offline will not work",
+        ));
+        return;
+    }
+
+    // Rejections are ordinary — a 404 on sw.js in a development build, storage
+    // refused in a private window — and an unhandled one is a console error
+    // that looks far more serious than it is.
+    let promise = window.navigator().service_worker().register("/sw.js");
+    let swallow = Closure::<dyn FnMut(JsValue)>::new(|err: JsValue| {
+        web_sys::console::warn_2(
+            &JsValue::from_str("go-notes: the service worker did not register"),
+            &err,
+        );
+    });
+    let _ = promise.catch(&swallow);
+    swallow.forget();
 }

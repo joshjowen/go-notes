@@ -65,7 +65,7 @@ impl Db {
         });
         request.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
 
-        let result = settle(request.as_ref()).await;
+        let result = settle_request(request.as_ref(), Some(&request)).await;
         request.set_onupgradeneeded(None);
         drop(upgrade);
 
@@ -117,8 +117,25 @@ impl Db {
 
 /// Awaits one IndexedDB request.
 async fn settle(request: &IdbRequest) -> Result<JsValue, JsValue> {
+    settle_request(request, None).await
+}
+
+/// Awaits a request, treating `blocked` on an open as a failure.
+///
+/// `blocked` fires instead of `success` when another tab still holds the
+/// database at an older version, and neither `success` nor `error` follows it
+/// until that tab goes away. Without this the future simply never resolves —
+/// and because opening the local store is the first thing start-up does, the
+/// whole application would sit on "Loading…" indefinitely with nothing in the
+/// console to say why. Failing here instead means the app comes up without
+/// offline storage, which it already knows how to report.
+async fn settle_request(
+    request: &IdbRequest,
+    open: Option<&IdbOpenDbRequest>,
+) -> Result<JsValue, JsValue> {
     let mut on_success: Option<Closure<dyn FnMut(web_sys::Event)>> = None;
     let mut on_error: Option<Closure<dyn FnMut(web_sys::Event)>> = None;
+    let mut on_blocked: Option<Closure<dyn FnMut(web_sys::Event)>> = None;
 
     let promise = Promise::new(&mut |resolve: js_sys::Function, reject: js_sys::Function| {
         let success = {
@@ -130,6 +147,7 @@ async fn settle(request: &IdbRequest) -> Result<JsValue, JsValue> {
         };
         let failure = {
             let request = request.clone();
+            let reject = reject.clone();
             Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
                 let reason = request
                     .error()
@@ -145,6 +163,19 @@ async fn settle(request: &IdbRequest) -> Result<JsValue, JsValue> {
         request.set_onerror(Some(failure.as_ref().unchecked_ref()));
         on_success = Some(success);
         on_error = Some(failure);
+
+        if let Some(open) = open {
+            let blocked = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+                let _ = reject.call1(
+                    &JsValue::NULL,
+                    &JsValue::from_str(
+                        "another tab is holding the local store at an older version",
+                    ),
+                );
+            });
+            open.set_onblocked(Some(blocked.as_ref().unchecked_ref()));
+            on_blocked = Some(blocked);
+        }
     });
 
     let outcome = JsFuture::from(promise).await;
@@ -153,8 +184,12 @@ async fn settle(request: &IdbRequest) -> Result<JsValue, JsValue> {
     // has been fully delivered.
     request.set_onsuccess(None);
     request.set_onerror(None);
+    if let Some(open) = open {
+        open.set_onblocked(None);
+    }
     drop(on_success);
     drop(on_error);
+    drop(on_blocked);
 
     outcome
 }
