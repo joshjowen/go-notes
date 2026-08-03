@@ -79,7 +79,7 @@ pub async fn run(state: AppState) {
             continue;
         }
 
-        match apply(&queued).await {
+        match apply(state, &queued).await {
             Outcome::Done => {
                 touched.push(queued.op.subject().to_string());
                 state.pending.set(cache::drop_op(queued.id).await);
@@ -161,7 +161,12 @@ fn refresh_after_sync(state: AppState, touched: &[String]) {
 }
 
 /// Sends one queued operation.
-async fn apply(queued: &QueuedOp) -> Outcome {
+///
+/// Takes the state because a successful write returns a *new* content hash, and
+/// an open tab holding the old one would send it as the next `If-Match`. For a
+/// note created offline that hash is the empty string, so the very next save
+/// after a sync would come back as a conflict the user never caused.
+async fn apply(state: AppState, queued: &QueuedOp) -> Outcome {
     match &queued.op {
         PendingOp::CreateNote { path, markdown } => {
             match api::create_note(path.clone(), markdown.clone()).await {
@@ -172,6 +177,7 @@ async fn apply(queued: &QueuedOp) -> Outcome {
                         response.meta.content_hash.clone(),
                     ))
                     .await;
+                    state.set_hash(&response.meta.path, response.meta.content_hash);
                     Outcome::Done
                 }
                 // The note grew on the server while we were away — from another
@@ -179,7 +185,20 @@ async fn apply(queued: &QueuedOp) -> Outcome {
                 // failed save, and the same three ways out.
                 Err(ApiFailure::AlreadyExists(_)) => {
                     match api::read_note(path.clone()).await {
-                        Ok(theirs) if theirs.markdown == *markdown => Outcome::Done,
+                        // The same text on both sides is not a conflict; it is
+                        // the note we were trying to create, already there —
+                        // an earlier replay that landed before its
+                        // acknowledgement got back, most likely.
+                        Ok(theirs) if theirs.markdown == *markdown => {
+                            cache::put_note(&CachedNote::new(
+                                path.clone(),
+                                markdown.clone(),
+                                theirs.meta.content_hash.clone(),
+                            ))
+                            .await;
+                            state.set_hash(path, theirs.meta.content_hash);
+                            Outcome::Done
+                        }
                         Ok(theirs) => Outcome::Stop(Conflict {
                             path: path.clone(),
                             mine: markdown.clone(),
@@ -206,6 +225,7 @@ async fn apply(queued: &QueuedOp) -> Outcome {
                     response.meta.content_hash.clone(),
                 ))
                 .await;
+                state.set_hash(path, response.meta.content_hash);
                 Outcome::Done
             }
             Err(ApiFailure::Conflict(body)) => Outcome::Stop(Conflict {
@@ -219,7 +239,16 @@ async fn apply(queued: &QueuedOp) -> Outcome {
             // Recreating it is the choice that keeps the writing.
             Err(ApiFailure::NotFound) => {
                 match api::create_note(path.clone(), markdown.clone()).await {
-                    Ok(_) => Outcome::Done,
+                    Ok(response) => {
+                        cache::put_note(&CachedNote::new(
+                            path.clone(),
+                            markdown.clone(),
+                            response.meta.content_hash.clone(),
+                        ))
+                        .await;
+                        state.set_hash(path, response.meta.content_hash);
+                        Outcome::Done
+                    }
                     Err(err) => classify(err),
                 }
             }

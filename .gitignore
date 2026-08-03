@@ -6,6 +6,8 @@
 # the WASM bundle in particular is a large binary that would bloat history.
 /crates/ui/dist/
 /crates/ui/assets/
+# Screenshots written by crates/ui/smoke/flow.mjs.
+/crates/ui/smoke-*.png
 /editor/node_modules/
 /editor/dist/
 

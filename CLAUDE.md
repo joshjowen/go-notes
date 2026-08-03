@@ -25,6 +25,10 @@ DATABASE_URL=postgres://go_notes:go_notes@127.0.0.1:55432/go_notes \
 
 # The editor bridge's markdown round-trip
 cd editor && npm install && node --test --experimental-strip-types test/
+
+# The offline story end to end, in a browser, against the built frontend.
+# Needs `trunk build` first and Playwright installed; not part of cargo test.
+cd crates/ui && node smoke/flow.mjs
 ```
 
 Build, in this order — each step feeds the next:
@@ -89,6 +93,18 @@ Frontend state is one `AppState` struct of Leptos signals, passed through
 context (`crates/ui/src/state.rs`). It is `Copy`, so components take it by
 value. Watch for effects that read a signal they also write — `crates/ui/src/app.rs`
 documents an infinite mount loop that came from exactly that.
+
+### The offline layer cannot be unit-tested
+
+Its subject is what the browser does when the network is not there —
+IndexedDB, service workers, a fetch that never resolves — and none of that has
+a native equivalent `cargo test` can run. The pure parts (queue compaction,
+diff, local index, tree projection) are tested natively; everything else is
+covered by `crates/ui/smoke/flow.mjs` in a real browser. Two bugs shipped from
+skipping that step: `navigator.serviceWorker` is *undefined* on plain HTTP and
+throwing through it killed start-up, and a JS exception thrown into WebAssembly
+cannot be caught on the Rust side. Feature-detect before reaching through any
+browser global that a non-secure context may not have.
 
 ### Local-first data access
 

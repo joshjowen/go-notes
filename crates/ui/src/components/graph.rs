@@ -52,6 +52,13 @@ struct GraphScene {
     dragging: Option<usize>,
     panning: bool,
     last_pointer: Vec2,
+    /// Whether the pointer has travelled since it went down.
+    ///
+    /// A tap and a pan both end in a `click`, so without this, panning the
+    /// canvas with a finger and happening to lift over a node opens that note.
+    /// Harmless with a mouse, where a drag is deliberate; on a phone the whole
+    /// gesture *is* a drag.
+    moved: bool,
     /// Set once after the first layout settles, to frame the whole graph.
     fitted: bool,
 }
@@ -70,6 +77,7 @@ impl GraphScene {
             },
             hovered: None,
             dragging: None,
+            moved: false,
             panning: false,
             last_pointer: Vec2::ZERO,
             fitted: false,
@@ -263,6 +271,15 @@ pub fn GraphView() -> impl IntoView {
             let mut scene = scene.borrow_mut();
             let world = scene.camera.to_world(pointer, width, height);
 
+            // A few pixels of travel is a steady hand on a tap, not a drag.
+            if scene.dragging.is_some() || scene.panning {
+                let dx = pointer.x - scene.last_pointer.x;
+                let dy = pointer.y - scene.last_pointer.y;
+                if dx.abs() + dy.abs() > 3.0 {
+                    scene.moved = true;
+                }
+            }
+
             if let Some(index) = scene.dragging {
                 scene.simulation.set_position(index, world);
                 scene.simulation.reheat();
@@ -294,6 +311,7 @@ pub fn GraphView() -> impl IntoView {
             let radius = 14.0 / scene.camera.scale;
 
             scene.last_pointer = pointer;
+            scene.moved = false;
             match scene.simulation.node_at(world, radius) {
                 Some(index) => {
                     scene.dragging = Some(index);
@@ -324,6 +342,9 @@ pub fn GraphView() -> impl IntoView {
             let (pointer, width, height) = pointer_position(&ev);
             let (path, title, unresolved) = {
                 let scene = scene.borrow();
+                if scene.moved {
+                    return;
+                }
                 let world = scene.camera.to_world(pointer, width, height);
                 let radius = 14.0 / scene.camera.scale;
                 match scene.simulation.node_at(world, radius) {

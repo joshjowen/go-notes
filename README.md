@@ -391,6 +391,10 @@ cargo test -p go-notes-ui
 # The editor bridge's markdown round-trip
 cd editor && npm install && node --test --experimental-strip-types test/
 
+# The offline story, end to end, in a real browser against the real build.
+# Needs `trunk build` to have run, and Playwright's Chromium.
+cd crates/ui && node smoke/flow.mjs
+
 # Build the frontend
 cd editor && npm run build          # writes crates/ui/assets/
 cd crates/ui && trunk build --release
@@ -423,6 +427,19 @@ go-notes check      # report where the index disagrees with the filesystem
 go-notes reindex    # rebuild the index from the filesystem
 go-notes healthcheck
 ```
+
+### The offline smoke test
+
+`crates/ui/smoke/flow.mjs` drives the built frontend through the whole story —
+sign in, edit, kill the server, keep writing, bring it back, resolve a conflict
+— against a stand-in API in `smoke/api.mjs`. It exists because nothing else
+can test this: the subject is what a browser does when the network is gone, and
+IndexedDB, service workers and a fetch that never resolves have no native
+equivalent for `cargo test` to run. A start-up crash on plain HTTP shipped for
+exactly that reason — it compiled, the unit tests passed, and nothing had ever
+loaded the page.
+
+Playwright is not a project dependency; install it when you want to run this.
 
 ### Layout
 
