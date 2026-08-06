@@ -27,6 +27,11 @@ on disk is still plain `.md` that `grep`, `git` and every other tool understand.
   another. It behaves as an ordinary link everywhere — it resolves, it produces a
   backlink, it survives a rename — and the graph draws it differently and labels
   it with your word for the relationship.
+- **Suggested links, if you want them.** Point `[embeddings]` at any
+  OpenAI-compatible endpoint — Ollama on the same machine, or a hosted API — and
+  the graph gains dashed edges between notes that are *about* the same thing
+  without linking to each other. Off by default, and the model is only ever
+  reached from the server.
 - **Backlinks.** Every note shows what links to it, with surrounding context.
 - **A graph view.** Force-directed, rendered on a canvas, with the physics in
   Rust. Notes you have linked to but not yet written appear as distinct nodes.
@@ -338,9 +343,20 @@ Go-Notes is built to run with no route to the internet at all.
   frontend points at another origin — including one arriving through an npm
   dependency of the editor bundle.
 
-The two things that *do* leave the machine are both yours and both optional: the
-OIDC provider, if you configure one, and Postgres. An install using local
-accounts talks to nothing but its own database.
+The things that *do* leave the machine are all yours and all optional: the OIDC
+provider, if you configure one; Postgres; and the embeddings endpoint, if you
+enable one. An install using local accounts and no embeddings talks to nothing
+but its own database.
+
+Embeddings deserve a sentence of their own, because whether they break the
+air-gap is entirely your choice of `api_base`. Pointed at `http://localhost:11434`
+— Ollama, LM Studio, anything else you run yourself — nothing leaves the host at
+all, and semantic links work on a network with no route out. Pointed at a hosted
+API, the *text of your notes* is sent to it, a passage at a time. There is no
+default host precisely so that this is a decision rather than a discovery, and
+the server logs which one it is at startup. The browser never talks to the model
+either way: the request is made server-side, and the page's
+`connect-src 'self'` would refuse it in any case.
 
 Container images still have to be built somewhere with a network, or pulled in
 and loaded with `podman load`; that is a build-time dependency, not a runtime

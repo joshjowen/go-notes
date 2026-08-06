@@ -92,6 +92,7 @@ impl GraphScene {
             .map(|edge| Edge {
                 source: edge.source as usize,
                 target: edge.target as usize,
+                weight: edge.weight,
             })
             .collect();
 
@@ -140,6 +141,9 @@ pub fn GraphView() -> impl IntoView {
     let scene = Rc::new(RefCell::new(GraphScene::empty()));
     let local_only = RwSignal::new(false);
     let depth = RwSignal::new(1u32);
+    // Off by default. Suggestions are the model's opinion, and a graph that
+    // opens full of them buries the connections the author actually made.
+    let show_semantic = RwSignal::new(false);
     let loading = RwSignal::new(true);
     let node_count = RwSignal::new(0usize);
 
@@ -153,6 +157,7 @@ pub fn GraphView() -> impl IntoView {
             let _ = state.graph_epoch.get();
             let is_local = local_only.get();
             let depth_value = depth.get();
+            let semantic = show_semantic.get();
             let focus = state.active_path();
 
             let scene = scene.clone();
@@ -163,7 +168,7 @@ pub fn GraphView() -> impl IntoView {
                 } else {
                     "all"
                 };
-                match api::graph(scope, focus.as_deref(), depth_value).await {
+                match api::graph(scope, focus.as_deref(), depth_value, semantic).await {
                     Ok(data) => {
                         crate::offline::net::report_reachable(state);
                         node_count.set(data.nodes.len());
@@ -436,6 +441,17 @@ pub fn GraphView() -> impl IntoView {
                     "Around this note only"
                 </label>
 
+                <Show when=move || state.me.get().is_some_and(|me| me.semantic_links)>
+                    <label>
+                        <input
+                            type="checkbox"
+                            prop:checked=move || show_semantic.get()
+                            on:change=move |ev| show_semantic.set(event_target_checked(&ev))
+                        />
+                        "Show suggested links"
+                    </label>
+                </Show>
+
                 <Show when=move || local_only.get()>
                     <label>
                         "Depth"
@@ -580,6 +596,8 @@ fn render(canvas: &web_sys::HtmlCanvasElement, scene: &mut GraphScene) {
     // index, so the physics edge and the edge it came from are the same edge.
     let show_labels = camera.scale > 0.45 || scene.data.nodes.len() < 120;
     let mut relation_labels: Vec<(Vec2, &str)> = Vec::new();
+    let dash = js_sys::Array::of2(&4.0f64.into(), &4.0f64.into());
+    let solid = js_sys::Array::new();
     let mut label_rows: std::collections::HashMap<(usize, usize), u32> =
         std::collections::HashMap::new();
 
@@ -604,10 +622,22 @@ fn render(canvas: &web_sys::HtmlCanvasElement, scene: &mut GraphScene) {
         };
         context.set_global_alpha(alpha);
 
-        // A typed link is drawn in the accent colour and a little heavier: it
-        // says more than the others, and at a glance the graph should show which
-        // connections somebody bothered to name.
-        let typed = scene.data.edges.get(index).map(|e| e.kind) == Some(EdgeKind::Typed);
+        // Three weights of line for three degrees of certainty. A typed link is
+        // drawn in the accent colour and a little heavier, because it says more
+        // than the others. A suggestion is dashed and faded by its score: it is
+        // the model's guess, and it should never be mistakable for something
+        // somebody wrote.
+        let kind = scene.data.edges.get(index).map(|e| e.kind).unwrap_or(EdgeKind::Link);
+        let suggested = kind == EdgeKind::Semantic;
+        let typed = kind == EdgeKind::Typed;
+
+        if suggested {
+            let weight = scene.data.edges.get(index).map(|e| e.weight).unwrap_or(1.0);
+            context.set_global_alpha(alpha * f64::from(weight.clamp(0.0, 1.0)) * 0.7);
+            let _ = context.set_line_dash(&dash);
+        } else {
+            let _ = context.set_line_dash(&solid);
+        }
         context.set_stroke_style_str(if touches_hover || typed { &accent } else { &edge_colour });
         context.set_line_width(if typed { 1.6 } else { 1.0 });
 
@@ -641,6 +671,7 @@ fn render(canvas: &web_sys::HtmlCanvasElement, scene: &mut GraphScene) {
     }
 
     context.set_line_width(1.0);
+    let _ = context.set_line_dash(&solid);
 
     // --- relation labels ------------------------------------------------------
     // Under the nodes, so a busy hub stays readable; a relation is a caption on

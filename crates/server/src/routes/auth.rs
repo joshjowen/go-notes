@@ -26,8 +26,8 @@ pub async fn info(State(state): State<AppState>) -> Json<AuthInfo> {
     Json(state.auth_info())
 }
 
-pub async fn me(CurrentUser(user): CurrentUser) -> Json<Me> {
-    Json(user.to_me())
+pub async fn me(State(state): State<AppState>, CurrentUser(user): CurrentUser) -> Json<Me> {
+    Json(user.to_me(state.semantic_links))
 }
 
 /// Username and password against the local file.
@@ -81,7 +81,7 @@ pub async fn login(
     let user = auth::provision_local_user(&state.pool, &local_user).await?;
     let cookie = session::establish(&state, &user, web::user_agent(&headers).as_deref()).await?;
 
-    Ok((jar.add(cookie), Json(user.to_me())).into_response())
+    Ok((jar.add(cookie), Json(user.to_me(state.semantic_links))).into_response())
 }
 
 #[derive(Debug, serde::Serialize)]

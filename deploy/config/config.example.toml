@@ -85,3 +85,46 @@ allowed_extensions = [
     "txt", "csv", "md", "json", "zip",
     "mp3", "mp4", "webm", "ogg", "wav",
 ]
+
+# Semantic links: suggested connections between notes that are about the same
+# thing without linking to each other. Entirely optional, and off unless you turn
+# it on.
+#
+# There is deliberately no default endpoint. Whether this feature keeps an
+# air-gapped install air-gapped depends entirely on the URL you put here: a model
+# running on this machine sends nothing anywhere, while a hosted API receives the
+# text of your notes a passage at a time. The server says which one it is in the
+# log at startup.
+[embeddings]
+enabled = false
+
+# Base URL up to but not including /embeddings. Two shapes people actually use:
+#
+#   Ollama on this host      http://localhost:11434/v1     (no api_key needed)
+#   LM Studio on this host   http://localhost:1234/v1      (no api_key needed)
+#   OpenAI                   https://api.openai.com/v1     (api_key required)
+#
+# Anything speaking the OpenAI embeddings API works.
+api_base = ""
+api_key = ""
+
+# e.g. "nomic-embed-text" for Ollama, "text-embedding-3-small" for OpenAI.
+model = ""
+
+# Requested vector width. 0 leaves it to the model, which is right unless you are
+# deliberately trading accuracy for storage on a model that supports it.
+dimensions = 0
+
+# Passages per request. Lower it if a hosted API is rate-limiting you.
+batch_size = 32
+timeout_secs = 30
+
+# How often the background worker looks for passages that have not been embedded
+# yet. Nothing waits on this: saving a note never contacts the model.
+interval_secs = 60
+
+# Most suggested links kept per note, and how similar two passages must be to
+# count. Lowering min_score fills the graph with notes that merely share a
+# register; a graph claiming everything is related says nothing.
+neighbours = 5
+min_score = 0.78

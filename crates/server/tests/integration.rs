@@ -260,6 +260,86 @@ async fn typed_links_resolve_and_keep_their_relation() {
     harness.cleanup().await;
 }
 
+/// Passages are written by the ordinary save path, in the same transaction as
+/// the links and the tags.
+///
+/// This is the offline-replay proof. A save made with no network is queued in
+/// the browser and replayed later through exactly this handler, so if passages
+/// appear here they appear for a replayed edit too — there is no second code
+/// path that could be missing them, and this test is what says so.
+#[tokio::test]
+async fn saving_a_note_writes_its_passages() {
+    let harness = Harness::new("chunks").await;
+
+    let long = "This paragraph is long enough to be worth embedding, which means \
+                clearing the minimum length the chunker imposes on a passage.";
+    harness
+        .write("Note.md", &format!("# One\n\n{long}\n\n# Two\n\n{long} Again.\n"))
+        .await;
+
+    let chunks: Vec<(i32, String, String)> = sqlx::query(
+        "SELECT c.ordinal, c.heading, c.body_hash
+         FROM note_chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE c.user_id = $1 AND n.rel_path = $2
+         ORDER BY c.ordinal",
+    )
+    .bind(harness.user.id)
+    .bind("Note.md")
+    .fetch_all(&harness.pool)
+    .await
+    .expect("chunks")
+    .into_iter()
+    .map(|row| (row.get("ordinal"), row.get("heading"), row.get("body_hash")))
+    .collect();
+
+    assert_eq!(chunks.len(), 2, "one passage per section");
+    assert_eq!(chunks[0].1, "One");
+    assert_eq!(chunks[1].1, "Two");
+    assert_ne!(chunks[0].2, chunks[1].2, "different text, different hash");
+
+    // Editing the second section must leave the first one's hash alone, or every
+    // save re-embeds the whole note and the cache buys nothing.
+    let first_hash_before = chunks[0].2.clone();
+    harness
+        .write(
+            "Note.md",
+            &format!("# One\n\n{long}\n\n# Two\n\n{long} Rewritten entirely.\n"),
+        )
+        .await;
+
+    let after: Vec<String> = sqlx::query_scalar(
+        "SELECT c.body_hash
+         FROM note_chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE c.user_id = $1 AND n.rel_path = $2
+         ORDER BY c.ordinal",
+    )
+    .bind(harness.user.id)
+    .bind("Note.md")
+    .fetch_all(&harness.pool)
+    .await
+    .expect("chunks after");
+
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0], first_hash_before, "the untouched section re-embedded");
+    assert_ne!(after[1], chunks[1].2);
+
+    // Deleting the note takes its passages with it, rather than leaving rows
+    // pointing at a note that no longer exists.
+    index::remove_note(&harness.pool, harness.user.id, "Note.md")
+        .await
+        .expect("remove");
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM note_chunks WHERE user_id = $1")
+        .bind(harness.user.id)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("count");
+    assert_eq!(left, 0);
+
+    harness.cleanup().await;
+}
+
 /// Writing a link before its target exists is normal in a linked vault. The link
 /// must be stored as broken and heal by itself once the note appears.
 #[tokio::test]
@@ -371,7 +451,7 @@ async fn the_index_rebuilds_itself_from_the_filesystem() {
     // Wipe every derived table, exactly as the README invites the reader to do.
     harness
         .pool
-        .execute("TRUNCATE notes, folders, tags, attachments CASCADE")
+        .execute("TRUNCATE notes, folders, tags, attachments, note_chunks, embeddings, semantic_links CASCADE")
         .await
         .expect("truncate");
     assert_eq!(harness.note_count().await, 0);

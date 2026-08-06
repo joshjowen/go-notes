@@ -131,7 +131,7 @@ impl CodeMask {
     }
 }
 
-fn markdown_options() -> Options {
+pub(crate) fn markdown_options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -491,6 +491,14 @@ fn frontmatter_tags(frontmatter: &Value) -> Vec<String> {
     }
     out.retain(|t| !t.is_empty());
     out
+}
+
+/// Just the body of a note, with any frontmatter block removed.
+///
+/// Exposed for the chunker, which needs the same notion of "where the prose
+/// starts" this module already has — a second one would drift.
+pub fn body_without_frontmatter(content: &str) -> &str {
+    split_frontmatter(content).1
 }
 
 /// Parses a note. `stem` is the filename without its extension, used as the

@@ -348,13 +348,21 @@ pub async fn notes_with_tag(tag: String) -> ApiResult<Vec<QuickSwitchItem>> {
     decode(response).await
 }
 
-pub async fn graph(scope: &str, path: Option<&str>, depth: u32) -> ApiResult<GraphResponse> {
+pub async fn graph(
+    scope: &str,
+    path: Option<&str>,
+    depth: u32,
+    semantic: bool,
+) -> ApiResult<GraphResponse> {
+    // Only sent when asked for: the server leaves the suggestion query out
+    // entirely without it, so the default payload is what it always was.
+    let suggestions = if semantic { "&semantic=true" } else { "" };
     let url = match path {
         Some(path) if scope == "local" => format!(
-            "/api/graph?scope=local&depth={depth}&path={}",
+            "/api/graph?scope=local&depth={depth}{suggestions}&path={}",
             encode_query(path)
         ),
-        _ => "/api/graph?scope=all".to_string(),
+        _ => format!("/api/graph?scope=all{suggestions}"),
     };
     let response = Request::get(&url).send().await.map_err(network_error)?;
     decode(response).await

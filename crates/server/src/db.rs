@@ -40,12 +40,16 @@ impl User {
         })
     }
 
-    pub fn to_me(&self) -> go_notes_shared::Me {
+    /// `semantic_links` is a property of the server rather than of the user, so
+    /// the caller passes it in — `AppState` is what knows whether a model was
+    /// configured, and this type deliberately knows nothing about configuration.
+    pub fn to_me(&self, semantic_links: bool) -> go_notes_shared::Me {
         go_notes_shared::Me {
             username: self.username.clone(),
             display_name: self.display_name.clone(),
             email: self.email.clone(),
             auth_provider: self.auth_provider.clone(),
+            semantic_links,
         }
     }
 }

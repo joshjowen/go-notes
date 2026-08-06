@@ -23,6 +23,9 @@ pub struct AppState {
     /// `None` when OIDC is disabled or discovery failed.
     pub oidc: Option<Arc<OidcProvider>>,
     pub throttle: Arc<LoginThrottle>,
+    /// Whether an embeddings model is configured, so the frontend can leave the
+    /// suggested-links control out on a server that can never produce any.
+    pub semantic_links: bool,
 }
 
 impl AppState {

@@ -102,6 +102,7 @@ pub async fn index_note_content(
 
     replace_links(&mut tx, user.id, note_id, &parsed.links).await?;
     replace_tags(&mut tx, user.id, note_id, &parsed.tags).await?;
+    replace_chunks(&mut tx, user.id, note_id, &file.markdown).await?;
 
     tx.commit().await?;
 
@@ -200,6 +201,70 @@ async fn replace_links(
     .bind(&ordinals)
     .bind(&contexts)
     .bind(&relations)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
+}
+
+/// Splits the note into passages and stores them for the embedding worker.
+///
+/// In the same transaction as the links and the tags, and synchronous, because
+/// this is only text handling — no network is involved here and none may be. The
+/// model is reached from the background worker, never from a request. That is
+/// what stops a slow endpoint from making a save slow, and it is what makes a
+/// save replayed from an offline queue behave exactly like any other save: it
+/// arrives through the same handler, so the passages are written the same way
+/// and the worker picks them up on its next pass. There is deliberately no
+/// offline-specific path, because a second way in is a second thing to get wrong.
+///
+/// Passages are always rewritten in full rather than diffed. The rows are cheap,
+/// and the *embeddings* are keyed by content hash anyway — so rewriting a row
+/// that says the same thing costs nothing at the model, while diffing would let a
+/// note whose paragraphs were reordered leave a stale passage behind.
+async fn replace_chunks(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    note_id: Uuid,
+    markdown: &str,
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM note_chunks WHERE note_id = $1")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+
+    let chunks = crate::chunk::chunks(markdown, crate::chunk::DEFAULT_CHUNK_CHARS);
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    let mut ordinals = Vec::with_capacity(chunks.len());
+    let mut headings = Vec::with_capacity(chunks.len());
+    let mut bodies = Vec::with_capacity(chunks.len());
+    let mut hashes = Vec::with_capacity(chunks.len());
+
+    for chunk in &chunks {
+        ordinals.push(chunk.ordinal);
+        headings.push(chunk.heading.clone());
+        bodies.push(chunk.body.clone());
+        // Hashed over exactly what the model will be sent, heading path included:
+        // a paragraph moved under a different heading means something else there,
+        // and should be embedded again rather than hit the cache.
+        hashes.push(blake3::hash(chunk.embedding_text().as_bytes()).to_hex().to_string());
+    }
+
+    sqlx::query(
+        "INSERT INTO note_chunks (user_id, note_id, ordinal, heading, body, body_hash)
+         SELECT $1, $2, t.ordinal, t.heading, t.body, t.hash
+         FROM unnest($3::int[], $4::text[], $5::text[], $6::text[])
+              AS t(ordinal, heading, body, hash)",
+    )
+    .bind(user_id)
+    .bind(note_id)
+    .bind(&ordinals)
+    .bind(&headings)
+    .bind(&bodies)
+    .bind(&hashes)
     .execute(&mut **tx)
     .await?;
 

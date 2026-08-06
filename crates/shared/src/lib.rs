@@ -26,6 +26,14 @@ pub struct Me {
     /// `"local"` or `"oidc"` — the frontend uses this to decide whether the
     /// logout button should also bounce through the identity provider.
     pub auth_provider: String,
+    /// Whether this server has an embeddings model configured.
+    ///
+    /// Rides along with the identity because that is the one thing the app
+    /// fetches for a signed-in user, and a whole endpoint for one boolean would
+    /// be a round trip on every load. It is here rather than on `AuthInfo`
+    /// because that is only ever read by the login screen.
+    #[serde(default)]
+    pub semantic_links: bool,
 }
 
 /// What the login screen should offer, fetched before the user authenticates.
@@ -232,6 +240,9 @@ pub enum EdgeKind {
     Link,
     /// A `[[relation::Note]]` link, carrying the author's own word for it.
     Typed,
+    /// Not a link at all: two passages a model found similar. A suggestion, and
+    /// drawn as one.
+    Semantic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -244,6 +255,15 @@ pub struct GraphEdge {
     /// The author's word for the relationship. Only ever set on `Typed`.
     #[serde(default)]
     pub relation: Option<String>,
+    /// How strongly the two are tied: 1.0 for a link somebody wrote, the
+    /// similarity score for a `Semantic` edge. Drives both how faintly the edge
+    /// is drawn and how hard its spring pulls.
+    #[serde(default = "unit_weight")]
+    pub weight: f32,
+}
+
+fn unit_weight() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

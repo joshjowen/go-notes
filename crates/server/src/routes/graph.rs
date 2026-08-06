@@ -30,6 +30,14 @@ pub struct GraphParams {
     /// Draw links that point at notes which do not exist yet.
     #[serde(default = "default_true")]
     pub include_unresolved: bool,
+    /// Include the model's suggested connections alongside the real links.
+    ///
+    /// Off unless asked for, and the reason is size rather than taste: this
+    /// handler has no `LIMIT` and serialises the whole vault on every open, so
+    /// five suggestions a note across two thousand notes is ten thousand extra
+    /// edges on a payload that was fine as it was.
+    #[serde(default)]
+    pub semantic: bool,
 }
 
 fn default_true() -> bool {
@@ -120,6 +128,11 @@ pub async fn graph(
     let mut phantom_of: HashMap<String, u32> = HashMap::new();
     let mut edges: Vec<GraphEdge> = Vec::new();
     let mut seen_edges: HashSet<(u32, u32, Option<String>)> = HashSet::new();
+    // Unordered pairs that already have a real link, so a suggestion never
+    // duplicates a connection the author made themselves, and unordered pairs
+    // that already have a suggestion, since similarity is symmetric.
+    let mut linked_pairs: HashSet<(u32, u32)> = HashSet::new();
+    let mut seen_semantic: HashSet<(u32, u32)> = HashSet::new();
 
     for row in link_rows {
         let source_id: Uuid = row.try_get("source_note_id")?;
@@ -165,6 +178,7 @@ pub async fn graph(
         if source == target || !seen_edges.insert((source, target, relation.clone())) {
             continue;
         }
+        linked_pairs.insert((source.min(target), source.max(target)));
         edges.push(GraphEdge {
             source,
             target,
@@ -173,7 +187,47 @@ pub async fn graph(
                 None => EdgeKind::Link,
             },
             relation,
+            weight: 1.0,
         });
+    }
+
+    if params.semantic {
+        let suggested = sqlx::query(
+            "SELECT s.source_note_id, s.target_note_id, s.score
+             FROM semantic_links s
+             WHERE s.user_id = $1
+             ORDER BY s.score DESC",
+        )
+        .bind(user.id)
+        .fetch_all(&state.pool)
+        .await?;
+
+        for row in suggested {
+            let source_id: Uuid = row.try_get("source_note_id")?;
+            let target_id: Uuid = row.try_get("target_note_id")?;
+            let (Some(&source), Some(&target)) =
+                (index_of.get(&source_id), index_of.get(&target_id))
+            else {
+                continue;
+            };
+            // Similarity is symmetric, so A→B and B→A are the same suggestion
+            // seen twice; and a pair that is already linked does not need the
+            // model to point out that they are related.
+            let pair = (source.min(target), source.max(target));
+            if source == target
+                || linked_pairs.contains(&pair)
+                || !seen_semantic.insert(pair)
+            {
+                continue;
+            }
+            edges.push(GraphEdge {
+                source,
+                target,
+                kind: EdgeKind::Semantic,
+                relation: None,
+                weight: row.try_get::<f32, _>("score")?,
+            });
+        }
     }
 
     for edge in &edges {
@@ -284,6 +338,7 @@ mod tests {
             target,
             kind: EdgeKind::Link,
             relation: None,
+            weight: 1.0,
         }
     }
 

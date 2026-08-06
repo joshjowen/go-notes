@@ -56,6 +56,10 @@ pub struct Node {
 pub struct Edge {
     pub source: usize,
     pub target: usize,
+    /// Scales this edge's pull. 1.0 for a link somebody wrote; a suggestion
+    /// carries its similarity score, so it tugs related notes closer without
+    /// rearranging a layout the real links already determined.
+    pub weight: f32,
 }
 
 pub struct Simulation {
@@ -193,7 +197,7 @@ impl Simulation {
             let distance = (dx * dx + dy * dy).sqrt().max(0.01);
 
             let displacement = distance - self.spring_length;
-            let magnitude = self.spring * displacement;
+            let magnitude = self.spring * edge.weight * displacement;
             let fx = dx / distance * magnitude;
             let fy = dy / distance * magnitude;
 
@@ -571,7 +575,7 @@ mod tests {
 
     #[test]
     fn linked_nodes_settle_near_the_spring_length() {
-        let mut simulation = Simulation::new(&[1, 1], vec![Edge { source: 0, target: 1 }]);
+        let mut simulation = Simulation::new(&[1, 1], vec![Edge { source: 0, target: 1, weight: 1.0 }]);
         simulation.set_position(0, Vec2 { x: -400.0, y: 0.0 });
         simulation.set_position(1, Vec2 { x: 400.0, y: 0.0 });
 
@@ -587,9 +591,9 @@ mod tests {
     #[test]
     fn the_simulation_settles() {
         let mut simulation = Simulation::new(&[2, 2, 1, 1], vec![
-            Edge { source: 0, target: 1 },
-            Edge { source: 1, target: 2 },
-            Edge { source: 0, target: 3 },
+            Edge { source: 0, target: 1, weight: 1.0 },
+            Edge { source: 1, target: 2, weight: 1.0 },
+            Edge { source: 0, target: 3, weight: 1.0 },
         ]);
         assert!(!simulation.settled());
         run(&mut simulation, 800);
@@ -697,6 +701,7 @@ mod tests {
             .map(|index| Edge {
                 source: index,
                 target: index + 1,
+                weight: 1.0,
             })
             .collect();
         let mut simulation = Simulation::new(&vec![2; count], edges);
@@ -717,7 +722,7 @@ mod tests {
     /// panicking — a malformed response should degrade, not crash the tab.
     #[test]
     fn out_of_range_edges_are_ignored() {
-        let mut simulation = Simulation::new(&[1, 1], vec![Edge { source: 0, target: 99 }]);
+        let mut simulation = Simulation::new(&[1, 1], vec![Edge { source: 0, target: 99, weight: 1.0 }]);
         run(&mut simulation, 10);
         assert!(simulation.nodes.iter().all(|node| node.position.x.is_finite()));
     }
