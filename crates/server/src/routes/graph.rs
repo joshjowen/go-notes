@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use axum::extract::{Query, State};
 use axum::Json;
 use go_notes_shared::paths;
-use go_notes_shared::{GraphEdge, GraphNode, GraphResponse};
+use go_notes_shared::{EdgeKind, GraphEdge, GraphNode, GraphResponse};
 use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
@@ -77,10 +77,19 @@ pub async fn graph(
     // Resolved edges, plus the raw targets of broken links so they can become
     // phantom nodes. `DISTINCT` because two notes commonly link to the same
     // place more than once, and a doubled edge just makes the layout heavier.
+    //
+    // `relation` joins the DISTINCT rather than being dropped, so two links
+    // between the same pair that say different things stay two edges — the word
+    // is the whole point of a typed link, and collapsing them would keep an
+    // arbitrary one. `NULLS FIRST` puts the untyped row first for a pair that
+    // has both, so the plain link wins the dedup below and the graph does not
+    // claim a relationship the author only wrote once.
     let link_rows = sqlx::query(
-        "SELECT DISTINCT l.source_note_id, l.target_note_id, l.target_raw, l.target_key
+        "SELECT DISTINCT l.source_note_id, l.target_note_id, l.target_raw, l.target_key,
+                l.relation
          FROM links l
-         WHERE l.user_id = $1",
+         WHERE l.user_id = $1
+         ORDER BY l.relation NULLS FIRST",
     )
     .bind(user.id)
     .fetch_all(&state.pool)
@@ -110,7 +119,7 @@ pub async fn graph(
     // target rather than one per link.
     let mut phantom_of: HashMap<String, u32> = HashMap::new();
     let mut edges: Vec<GraphEdge> = Vec::new();
-    let mut seen_edges: HashSet<(u32, u32)> = HashSet::new();
+    let mut seen_edges: HashSet<(u32, u32, Option<String>)> = HashSet::new();
 
     for row in link_rows {
         let source_id: Uuid = row.try_get("source_note_id")?;
@@ -152,10 +161,19 @@ pub async fn graph(
 
         // A note linking to itself is common in templates and adds nothing but
         // a self-loop the layout cannot draw sensibly.
-        if source == target || !seen_edges.insert((source, target)) {
+        let relation: Option<String> = row.try_get("relation")?;
+        if source == target || !seen_edges.insert((source, target, relation.clone())) {
             continue;
         }
-        edges.push(GraphEdge { source, target });
+        edges.push(GraphEdge {
+            source,
+            target,
+            kind: match relation {
+                Some(_) => EdgeKind::Typed,
+                None => EdgeKind::Link,
+            },
+            relation,
+        });
     }
 
     for edge in &edges {
@@ -233,6 +251,7 @@ fn restrict_to_neighbourhood(
             Some(GraphEdge {
                 source: *renumbered.get(&edge.source)?,
                 target: *renumbered.get(&edge.target)?,
+                ..edge
             })
         })
         .collect();
@@ -259,20 +278,20 @@ mod tests {
         }
     }
 
+    fn edge(source: u32, target: u32) -> GraphEdge {
+        GraphEdge {
+            source,
+            target,
+            kind: EdgeKind::Link,
+            relation: None,
+        }
+    }
+
     /// A ── B ── C     D (isolated)
     fn chain() -> (Vec<GraphNode>, Vec<GraphEdge>) {
         (
             vec![node(0, "A.md"), node(1, "B.md"), node(2, "C.md"), node(3, "D.md")],
-            vec![
-                GraphEdge {
-                    source: 0,
-                    target: 1,
-                },
-                GraphEdge {
-                    source: 1,
-                    target: 2,
-                },
-            ],
+            vec![edge(0, 1), edge(1, 2)],
         )
     }
 
@@ -345,11 +364,7 @@ mod tests {
     #[test]
     fn cycles_terminate() {
         let nodes = vec![node(0, "A.md"), node(1, "B.md"), node(2, "C.md")];
-        let edges = vec![
-            GraphEdge { source: 0, target: 1 },
-            GraphEdge { source: 1, target: 2 },
-            GraphEdge { source: 2, target: 0 },
-        ];
+        let edges = vec![edge(0, 1), edge(1, 2), edge(2, 0)];
         let result = restrict_to_neighbourhood(nodes, edges, "A.md", 5);
         assert_eq!(result.nodes.len(), 3);
         assert_eq!(result.edges.len(), 3);

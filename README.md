@@ -23,6 +23,10 @@ on disk is still plain `.md` that `grep`, `git` and every other tool understand.
 - **`[[Wikilinks]]` with autocomplete.** Type `[[` and pick from your notes.
   Links to notes that do not exist yet render differently, and clicking one
   offers to create it.
+- **Typed links.** `[[contradicts::Budget]]` says *why* one note points at
+  another. It behaves as an ordinary link everywhere — it resolves, it produces a
+  backlink, it survives a rename — and the graph draws it differently and labels
+  it with your word for the relationship.
 - **Backlinks.** Every note shows what links to it, with surrounding context.
 - **A graph view.** Force-directed, rendered on a canvas, with the physics in
   Rust. Notes you have linked to but not yet written appear as distinct nodes.
@@ -359,6 +363,15 @@ you did not make.
 **Frontmatter aliases are not resolved.** `aliases:` in frontmatter is preserved
 in the file and parsed into the index, but `[[an alias]]` will not currently
 resolve to the note declaring it. Links resolve by path and filename.
+
+**A link target that looks like `label::name` is read as a typed link.**
+`[[contradicts::Budget]]` means "this note contradicts Budget"; the cost is that
+`[[std::vector]]` is read the same way, as the relation `std` pointing at
+`vector`. Nothing in the text distinguishes them. Targets containing anything a
+label cannot — a dot, a slash, a leading digit — are safe, and so is anything
+inside a code span or fence, which is where namespaced identifiers nearly always
+live. To force a literal target, write `[[./std::vector]]`; the `./` stops the
+split and is stripped again when the link resolves.
 
 **Login throttling is in-memory.** It resets when the process restarts. It is a
 speed bump against guessing, not a defence against a distributed attacker — which

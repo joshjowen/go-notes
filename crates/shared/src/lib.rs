@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod links;
 pub mod paths;
 
 /// Header used for optimistic-concurrency checks when saving a note.
@@ -217,10 +218,32 @@ pub struct GraphNode {
     pub unresolved: bool,
 }
 
+/// What kind of relationship an edge represents.
+///
+/// The distinction is worth drawing because the three are not equally certain.
+/// A `Link` is a fact about the file; a `Typed` link is that plus a word the
+/// author chose for it; a `Semantic` edge is a machine's guess, and the graph
+/// draws it as one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeKind {
+    /// An ordinary `[[wikilink]]`, embed, or inline markdown link.
+    #[default]
+    Link,
+    /// A `[[relation::Note]]` link, carrying the author's own word for it.
+    Typed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GraphEdge {
     pub source: u32,
     pub target: u32,
+    /// Absent in older payloads, which only ever meant `Link`.
+    #[serde(default)]
+    pub kind: EdgeKind,
+    /// The author's word for the relationship. Only ever set on `Typed`.
+    #[serde(default)]
+    pub relation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

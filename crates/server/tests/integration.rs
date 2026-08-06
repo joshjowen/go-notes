@@ -209,6 +209,57 @@ async fn links_resolve_and_produce_backlinks() {
     harness.cleanup().await;
 }
 
+/// A typed link is a link first. It has to resolve, produce a backlink and heal
+/// exactly as an untyped one does — the relation is extra, not different — and
+/// the relation itself has to survive the trip through the index.
+///
+/// This is also the only test that compiles the widened `replace_links` insert
+/// and the graph handler's `relation` column, since the SQL in this project is
+/// runtime strings.
+#[tokio::test]
+async fn typed_links_resolve_and_keep_their_relation() {
+    let harness = Harness::new("typed").await;
+
+    harness
+        .write(
+            "Plan.md",
+            "This [[contradicts::Budget]] and also mentions [[Budget]].\n",
+        )
+        .await;
+    harness.write("Budget.md", "The numbers.\n").await;
+
+    assert_eq!(
+        harness.outgoing("Plan.md").await,
+        vec![
+            ("Budget".to_string(), Some("Budget.md".to_string())),
+            ("Budget".to_string(), Some("Budget.md".to_string())),
+        ],
+        "the relation must not leak into the target, or neither link resolves"
+    );
+    // Two mentions, because there are two links. The backlinks pane lists
+    // mentions rather than notes, and a typed link is one of them.
+    assert_eq!(
+        harness.backlinks("Budget.md").await,
+        vec!["Plan.md", "Plan.md"]
+    );
+
+    let relations: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT l.relation
+         FROM links l
+         JOIN notes source ON source.id = l.source_note_id
+         WHERE source.user_id = $1 AND source.rel_path = $2
+         ORDER BY l.ordinal",
+    )
+    .bind(harness.user.id)
+    .bind("Plan.md")
+    .fetch_all(&harness.pool)
+    .await
+    .expect("relations");
+    assert_eq!(relations, vec![Some("contradicts".to_string()), None]);
+
+    harness.cleanup().await;
+}
+
 /// Writing a link before its target exists is normal in a linked vault. The link
 /// must be stored as broken and heal by itself once the note appears.
 #[tokio::test]

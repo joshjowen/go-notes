@@ -201,15 +201,15 @@ pub fn links_in(markdown: &str) -> Vec<(String, usize)> {
                     break;
                 };
                 let inner = &markdown[index + 2..index + 2 + close];
-                // `[[Target#heading|alias]]` — only the target names the note.
-                let target = inner
-                    .split('|')
-                    .next()
-                    .unwrap_or("")
-                    .split('#')
-                    .next()
-                    .unwrap_or("")
-                    .trim();
+                // `[[relation::Target#heading|alias]]` — only the target names
+                // the note. The relation is split off with the same rule the
+                // server uses, from the same code, because a device that read
+                // `contradicts::Kitchen` as a target would show no backlinks for
+                // Kitchen while offline and all of them again once online.
+                let addressed =
+                    inner.split('|').next().unwrap_or("").split('#').next().unwrap_or("");
+                let (_relation, target) = go_notes_shared::links::split_relation(addressed);
+                let target = target.trim();
                 if !target.is_empty() {
                     out.push((target.to_string(), index));
                 }
@@ -605,6 +605,31 @@ mod tests {
             .map(|(target, _)| target)
             .collect();
         assert_eq!(found, vec!["One".to_string()]);
+    }
+
+    /// Offline backlinks have to agree with the server about what a typed link
+    /// points at. If they did not, a note's backlinks would appear and disappear
+    /// as the connection came and went, which reads as data loss.
+    #[test]
+    fn a_typed_link_points_at_the_target_not_at_the_relation() {
+        let markdown = "[[contradicts::Kitchen]] and [[supersedes::Old#Q3|last]] and [[Plain]]\n";
+        let found: Vec<String> = links_in(markdown)
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect();
+        assert_eq!(
+            found,
+            vec!["Kitchen".to_string(), "Old".to_string(), "Plain".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_target_containing_colons_is_left_whole_offline_too() {
+        let found: Vec<String> = links_in("[[C++::Notes]]\n")
+            .into_iter()
+            .map(|(target, _)| target)
+            .collect();
+        assert_eq!(found, vec!["C++::Notes".to_string()]);
     }
 
     #[test]

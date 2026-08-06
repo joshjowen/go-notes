@@ -110,6 +110,16 @@
   border-bottom-color: var(--gn-accent);
 }
 
+/* A `[[contradicts::Note]]` link. The relation is not rendered inline — it would
+   interrupt the sentence the link sits in, and the author already wrote the
+   sentence — so the only signal is a firmer underline, and the relation itself
+   is in the tooltip. Deliberately quiet: a typed link is still just a link, and
+   the place it is meant to pay off is the graph. */
+.gn-wikilink-typed {
+  border-bottom-width: 2px;
+  border-bottom-color: var(--gn-accent);
+}
+
 /* A link to a note that does not exist yet. Obsidian shows these differently
    so a typo is obvious while writing rather than at read time. */
 .gn-wikilink-unresolved {

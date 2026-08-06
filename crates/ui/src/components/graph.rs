@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use go_notes_shared::GraphResponse;
+use go_notes_shared::{EdgeKind, GraphResponse};
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -575,8 +575,15 @@ fn render(canvas: &web_sys::HtmlCanvasElement, scene: &mut GraphScene) {
     });
 
     // --- edges --------------------------------------------------------------
-    context.set_line_width(1.0);
-    for edge in &scene.simulation.edges {
+    //
+    // `simulation.edges` and `data.edges` are built together and stay index for
+    // index, so the physics edge and the edge it came from are the same edge.
+    let show_labels = camera.scale > 0.45 || scene.data.nodes.len() < 120;
+    let mut relation_labels: Vec<(Vec2, &str)> = Vec::new();
+    let mut label_rows: std::collections::HashMap<(usize, usize), u32> =
+        std::collections::HashMap::new();
+
+    for (index, edge) in scene.simulation.edges.iter().enumerate() {
         let (Some(source), Some(target)) = (
             scene.simulation.nodes.get(edge.source),
             scene.simulation.nodes.get(edge.target),
@@ -588,14 +595,21 @@ fn render(canvas: &web_sys::HtmlCanvasElement, scene: &mut GraphScene) {
             .as_ref()
             .is_some_and(|set| set.contains(&edge.source) && set.contains(&edge.target));
 
-        context.set_global_alpha(if highlighted.is_none() {
+        let alpha = if highlighted.is_none() {
             0.45
         } else if touches_hover {
             0.9
         } else {
             0.08
-        });
-        context.set_stroke_style_str(if touches_hover { &accent } else { &edge_colour });
+        };
+        context.set_global_alpha(alpha);
+
+        // A typed link is drawn in the accent colour and a little heavier: it
+        // says more than the others, and at a glance the graph should show which
+        // connections somebody bothered to name.
+        let typed = scene.data.edges.get(index).map(|e| e.kind) == Some(EdgeKind::Typed);
+        context.set_stroke_style_str(if touches_hover || typed { &accent } else { &edge_colour });
+        context.set_line_width(if typed { 1.6 } else { 1.0 });
 
         let from = camera.to_screen(source.position, css_width, css_height);
         let to = camera.to_screen(target.position, css_width, css_height);
@@ -604,10 +618,42 @@ fn render(canvas: &web_sys::HtmlCanvasElement, scene: &mut GraphScene) {
         context.move_to(from.x as f64, from.y as f64);
         context.line_to(to.x as f64, to.y as f64);
         context.stroke();
+
+        // Collected rather than drawn here, because the font is set once for the
+        // text passes and a relation drawn now would be painted over by nodes.
+        if show_labels && alpha > 0.2 {
+            if let Some(relation) = scene.data.edges.get(index).and_then(|e| e.relation.as_deref())
+            {
+                // Two notes can be related in more than one way, and those edges
+                // share both endpoints — so their labels share a midpoint and
+                // land on top of each other. Stacking by how many have already
+                // been placed for this pair keeps both words readable.
+                let pair = (edge.source.min(edge.target), edge.source.max(edge.target));
+                let stacked = label_rows.entry(pair).or_insert(0);
+                let midpoint = Vec2 {
+                    x: (from.x + to.x) / 2.0,
+                    y: (from.y + to.y) / 2.0 - (*stacked as f32) * 11.0,
+                };
+                *stacked += 1;
+                relation_labels.push((midpoint, relation));
+            }
+        }
+    }
+
+    context.set_line_width(1.0);
+
+    // --- relation labels ------------------------------------------------------
+    // Under the nodes, so a busy hub stays readable; a relation is a caption on
+    // the connection, not a thing in its own right.
+    context.set_font("10px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
+    context.set_text_align("center");
+    context.set_fill_style_str(&accent);
+    context.set_global_alpha(0.75);
+    for (midpoint, relation) in &relation_labels {
+        let _ = context.fill_text(relation, midpoint.x as f64, midpoint.y as f64 - 3.0);
     }
 
     // --- nodes --------------------------------------------------------------
-    let show_labels = camera.scale > 0.45 || scene.data.nodes.len() < 120;
     context.set_font("12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif");
     context.set_text_align("center");
 

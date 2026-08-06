@@ -25,14 +25,57 @@ import type { Plugin } from 'unified'
 /** The mdast node this adds. */
 export interface WikiLinkNode {
   type: 'wikiLink'
-  /** Target as written, without the brackets, anchor or alias. */
+  /** Target as written, without the brackets, relation, anchor or alias. */
   value: string
+  /** The `relation::` part of `[[contradicts::Note]]`, if any. */
+  relation: string | null
   /** The `#heading` part, if any. */
   anchor: string | null
   /** The `|display text` part, if any. */
   alias: string | null
   /** True for `![[embed]]`. */
   embed: boolean
+}
+
+/**
+ * Longest relation label accepted, and the shape one has to have.
+ *
+ * This is the third implementation of a rule that lives in
+ * `crates/shared/src/links.rs`; the other two are the server's markdown parser
+ * and the frontend's offline index, which share that code. This one cannot, so
+ * it has to be kept honest by hand — `test/roundtrip.test.mjs` covers the same
+ * cases `relation_tests` does over there.
+ *
+ * The guard is what stops a vault that already contains `[[C++::Notes]]` from
+ * silently changing meaning: unless the text before `::` really looks like a
+ * label, the whole string stays the target.
+ */
+const MAX_RELATION = 32
+const RELATION_LABEL = /^[\p{L}][\p{L}\p{N} _-]*$/u
+
+/** Whether a label is one that may be used as a relation. */
+export function isRelationLabel(label: string): boolean {
+  return label !== '' && [...label].length <= MAX_RELATION && RELATION_LABEL.test(label)
+}
+
+/**
+ * Splits `relation::target`, or returns no relation if it does not look like one.
+ *
+ * A relation with nothing after it is not a typed link — `[[relates::]]` names
+ * no note — so this refuses it. The autocomplete uses `isRelationLabel` directly
+ * instead, because there the target legitimately *is* still empty: the user is
+ * mid-way through typing it.
+ */
+export function splitRelation(inner: string): { relation: string | null; target: string } {
+  const at = inner.indexOf('::')
+  if (at < 0) return { relation: null, target: inner }
+
+  const relation = inner.slice(0, at).trim()
+  const target = inner.slice(at + 2)
+  if (!isRelationLabel(relation) || target.trim() === '') {
+    return { relation: null, target: inner }
+  }
+  return { relation, target }
 }
 
 /**
@@ -55,7 +98,10 @@ export function splitTextValue(value: string): Array<WikiLinkNode | { type: 'tex
   while ((match = WIKILINK.exec(value)) !== null) {
     const [whole, bang, target, anchor, alias] = match
 
-    const trimmedTarget = target.trim()
+    // The pattern above lets `:` through, so a typed link arrives here whole and
+    // is unpicked rather than needing a second capture group.
+    const { relation, target: addressed } = splitRelation(target)
+    const trimmedTarget = addressed.trim()
     if (trimmedTarget === '') {
       // `[[]]` is not a link; leave it as the literal text the author typed.
       continue
@@ -68,6 +114,7 @@ export function splitTextValue(value: string): Array<WikiLinkNode | { type: 'tex
     out.push({
       type: 'wikiLink',
       value: trimmedTarget,
+      relation,
       anchor: anchor != null && anchor.trim() !== '' ? anchor.trim() : null,
       alias: alias != null && alias.trim() !== '' ? alias.trim() : null,
       embed: bang === '!',
@@ -85,9 +132,10 @@ export function splitTextValue(value: string): Array<WikiLinkNode | { type: 'tex
 /** Renders a wikiLink node back to the exact markdown it came from. */
 export function wikiLinkToMarkdown(node: WikiLinkNode): string {
   const bang = node.embed ? '!' : ''
+  const relation = node.relation ? `${node.relation}::` : ''
   const anchor = node.anchor ? `#${node.anchor}` : ''
   const alias = node.alias ? `|${node.alias}` : ''
-  return `${bang}[[${node.value}${anchor}${alias}]]`
+  return `${bang}[[${relation}${node.value}${anchor}${alias}]]`
 }
 
 /** Node types whose text content is code and must never be scanned. */
