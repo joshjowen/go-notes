@@ -1,0 +1,44 @@
+# The embeddings model behind "suggested links".
+#
+# BGE-base-en-v1.5 served by Hugging Face's text-embeddings-inference, which
+# speaks the same OpenAI-compatible API go-notes would use to talk to a hosted
+# provider — so the only difference between this and sending your notes to
+# somebody else's server is the URL, and this one keeps them on the host.
+#
+# 768 dimensions, small enough for a CPU. It publishes no ports: only the app
+# container reaches it, over the internal network.
+#
+# Not required by go-notes.container on purpose. Nothing but the suggested links
+# depends on it, so the app should start while this is still unpacking weights,
+# and keep working if it never starts at all.
+
+[Unit]
+Description=go-notes embeddings model
+Requires=go-notes-embeddings.volume
+After=go-notes-embeddings.volume
+
+[Container]
+ContainerName=go-notes-embeddings
+Image=ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.3
+AutoUpdate=registry
+
+Network=go-notes.network
+Volume=go-notes-embeddings.volume:/data:Z
+
+# Where the weights are cached, inside the volume above.
+Environment=HF_HOME=/data
+
+Exec=--model-id BAAI/bge-base-en-v1.5 --auto-truncate
+
+# No health command: nothing depends on this unit, and the image carries no
+# shell to run one in. `journalctl --user -u go-notes-embeddings.service` is
+# where you look, and suggested links in the graph are the real signal.
+
+[Service]
+Restart=always
+# The first start downloads the model; a normal start timeout kills it partway
+# through and leaves a half-populated cache.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

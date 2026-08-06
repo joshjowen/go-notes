@@ -28,6 +28,17 @@ Volume=%h/.config/go-notes:/config:Z
 Environment=GO_NOTES__SERVER__DATA_DIR=/data/notes
 Environment=GO_NOTES__AUTH__LOCAL__USERS_FILE=/config/users.json
 Environment=RUST_LOG=info
+
+# Suggested links, served by go-notes-embeddings.container on this host, so the
+# text of your notes never leaves it. Point API_BASE at a hosted provider and
+# that stops being true — a different decision, worth making deliberately.
+# Drop ENABLED to false (and stop that unit) to switch the feature off.
+Environment=GO_NOTES__EMBEDDINGS__ENABLED=true
+Environment=GO_NOTES__EMBEDDINGS__API_BASE=http://go-notes-embeddings:80/v1
+Environment=GO_NOTES__EMBEDDINGS__MODEL=BAAI/bge-base-en-v1.5
+# BGE's scores sit high, so this is the number to reach for if the graph
+# suggests too much or too little. The README says how to look at what you got.
+Environment=GO_NOTES__EMBEDDINGS__MIN_SCORE=0.82
 EnvironmentFile=%h/.config/go-notes/go-notes.env
 
 # Rootless cannot bind below 1024 without granting the capability, so this sits

@@ -281,20 +281,23 @@ impl Config {
             // A hosted endpoint with no key fails on the first request with a
             // 401 the user will find in a log an hour later; a local one with no
             // key is completely normal. Only one of those is worth a warning.
-            if self.embeddings.api_key.is_empty() && !is_loopback(&self.embeddings.api_base) {
+            if self.embeddings.api_key.is_empty()
+                && reaches_the_public_internet(&self.embeddings.api_base)
+            {
                 tracing::warn!(
                     api_base = %self.embeddings.api_base,
-                    "embeddings.api_key is empty and embeddings.api_base is not local; \
-                     the endpoint will probably refuse every request"
+                    "embeddings.api_key is empty and embeddings.api_base is not on this \
+                     machine or its network; the endpoint will probably refuse every request"
                 );
             }
-            if !is_loopback(&self.embeddings.api_base) {
+            if reaches_the_public_internet(&self.embeddings.api_base) {
                 // Said plainly, once, at startup: this is the one setting in the
                 // application that can make an air-gapped deployment talk to
                 // somebody else's server.
                 tracing::info!(
                     api_base = %self.embeddings.api_base,
-                    "embeddings will be sent to a non-local endpoint"
+                    "the text of notes will be sent to this embeddings endpoint, \
+                     which is outside this machine and its network"
                 );
             }
         }
@@ -319,13 +322,8 @@ impl Config {
     }
 }
 
-/// Whether a URL names this machine.
-///
-/// Only used to decide how loudly to talk about a missing API key and about
-/// traffic leaving the host, so a hostname that merely resolves to a loopback
-/// address is not chased down — the answer only has to be right for the shapes
-/// people actually write.
-fn is_loopback(url: &str) -> bool {
+/// The hostname out of a URL, without scheme, credentials, port or path.
+fn host_of(url: &str) -> &str {
     let host = url
         .split("://")
         .nth(1)
@@ -340,13 +338,84 @@ fn is_loopback(url: &str) -> bool {
     // off after the closing bracket — `[::1]:8080` cut at the first colon leaves
     // `[`, which matches nothing and would have quietly called every local IPv6
     // endpoint remote.
-    let host = match host.strip_prefix('[') {
+    match host.strip_prefix('[') {
         Some(rest) => rest.split(']').next().unwrap_or(""),
         None => host.split(':').next().unwrap_or(""),
-    };
+    }
+}
+
+/// Whether a URL names this machine.
+fn is_loopback(url: &str) -> bool {
+    let host = host_of(url);
     matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
         || host.starts_with("127.")
         || host.ends_with(".localhost")
+}
+
+/// Whether reaching this URL plausibly means leaving the machine and its network.
+///
+/// This decides two log lines — whether a missing API key is worth warning about,
+/// and whether to say that notes are being sent somewhere — so it has to be right
+/// about the shapes people actually write, and the container case is the one that
+/// matters most. `http://embeddings:80/v1` is another container on an internal
+/// network; treating it as remote made the shipped example warn, on every start,
+/// that an endpoint sitting beside it "will probably refuse every request".
+///
+/// The rule is therefore: a single-label name is a container or a LAN host, a
+/// private address range is a private network, and a handful of reserved suffixes
+/// are by definition not routable. Everything else has a dotted public-looking
+/// name, which is what a hosted API always has.
+///
+/// It cannot be exact — a company's `notes.internal.example.com` resolves inside
+/// the building and still counts as public here. The consequence of being wrong
+/// that way is one extra line in a log saying data may leave, which is the safe
+/// direction to be wrong in.
+fn reaches_the_public_internet(url: &str) -> bool {
+    let host = host_of(url);
+    if host.is_empty() || is_loopback(url) {
+        return false;
+    }
+
+    // Kubernetes, Docker and Podman all resolve bare service names on an
+    // internal network. Nothing on the public internet is reachable by one.
+    if !host.contains('.') {
+        return false;
+    }
+
+    const PRIVATE_SUFFIXES: [&str; 7] = [
+        ".local",
+        ".internal",
+        ".lan",
+        ".home",
+        ".home.arpa",
+        ".svc",
+        ".cluster.local",
+    ];
+    if PRIVATE_SUFFIXES.iter().any(|suffix| host.ends_with(suffix)) {
+        return false;
+    }
+
+    !is_private_address(host)
+}
+
+/// RFC 1918 and friends, for a host written as a literal address.
+fn is_private_address(host: &str) -> bool {
+    let octets: Vec<&str> = host.split('.').collect();
+    if octets.len() != 4 || !octets.iter().all(|o| o.parse::<u8>().is_ok()) {
+        // Not a dotted-quad, so nothing here applies. IPv6 unique-local is not
+        // chased down: nobody configures one of these by hand.
+        return false;
+    }
+    let first: u8 = octets[0].parse().unwrap_or(0);
+    let second: u8 = octets[1].parse().unwrap_or(0);
+    match first {
+        10 => true,
+        127 => true,
+        172 => (16..=31).contains(&second),
+        192 => second == 168,
+        169 => second == 254,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -412,6 +481,49 @@ mod tests {
         assert!(is_loopback("http://ollama.localhost/v1"));
         assert!(!is_loopback("https://api.openai.com/v1"));
         assert!(!is_loopback("https://localhost.example.com/v1"));
+    }
+
+    /// The case that matters most, because it is what the shipped compose files
+    /// use: a sibling container reached by service name. Calling that "not local"
+    /// made the example warn on every start that the endpoint beside it would
+    /// probably refuse every request.
+    #[test]
+    fn a_container_on_an_internal_network_is_not_the_public_internet() {
+        assert!(!reaches_the_public_internet("http://embeddings:80/v1"));
+        assert!(!reaches_the_public_internet("http://go-notes-embeddings:80/v1"));
+        assert!(!reaches_the_public_internet("http://ollama:11434/v1"));
+    }
+
+    #[test]
+    fn private_networks_and_reserved_names_are_not_the_public_internet() {
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8080/v1",
+            "http://10.0.0.5:8080/v1",
+            "http://192.168.1.20:8080/v1",
+            "http://172.16.4.4:8080/v1",
+            "http://172.31.255.1:8080/v1",
+            "http://box.local:8080/v1",
+            "http://models.internal:8080/v1",
+            "http://tei.default.svc.cluster.local/v1",
+        ] {
+            assert!(!reaches_the_public_internet(url), "{url} should be private");
+        }
+    }
+
+    #[test]
+    fn a_hosted_api_is_the_public_internet() {
+        for url in [
+            "https://api.openai.com/v1",
+            "https://api.mistral.ai/v1",
+            "https://embeddings.example.com/v1",
+            // Outside RFC 1918, so it is only reachable by routing there.
+            "http://172.32.0.1:8080/v1",
+            "http://8.8.8.8/v1",
+        ] {
+            assert!(reaches_the_public_internet(url), "{url} should be public");
+        }
     }
 
     /// A secret that prints itself is a secret in a log file.

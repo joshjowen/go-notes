@@ -27,11 +27,11 @@ on disk is still plain `.md` that `grep`, `git` and every other tool understand.
   another. It behaves as an ordinary link everywhere — it resolves, it produces a
   backlink, it survives a rename — and the graph draws it differently and labels
   it with your word for the relationship.
-- **Suggested links, if you want them.** Point `[embeddings]` at any
-  OpenAI-compatible endpoint — Ollama on the same machine, or a hosted API — and
-  the graph gains dashed edges between notes that are *about* the same thing
-  without linking to each other. Off by default, and the model is only ever
-  reached from the server.
+- **Suggested links.** The graph draws dashed edges between notes that are
+  *about* the same thing without linking to each other. The example deployments
+  include a BGE-base-en-v1.5 container to provide them, so this works out of the
+  box and nothing leaves the machine; point it at a hosted OpenAI-compatible API
+  instead if you would rather. The model is only ever reached from the server.
 - **Backlinks.** Every note shows what links to it, with surrounding context.
 - **A graph view.** Force-directed, rendered on a canvas, with the physics in
   Rust. Notes you have linked to but not yet written appear as distinct nodes.
@@ -62,8 +62,9 @@ on disk is still plain `.md` that `grep`, `git` and every other tool understand.
 ```
 Browser ── HTTPS ──> Caddy ──> go-notes (axum, :8080) ──> Postgres  (derived index)
                        │            │
-                       └─ Authelia  └──> /data/notes/<user>/**.md   (source of truth)
-                          (OIDC)
+                       │            ├──> /data/notes/<user>/**.md   (source of truth)
+                       └─ Authelia  │
+                          (OIDC)    └──> embeddings (BGE-base-en-v1.5, optional)
 ```
 
 One binary serves the API and the WebAssembly frontend; there is no separate web
@@ -121,6 +122,14 @@ markdown files — compose resolves the relative path against the compose file, 
 set `NOTES_DIR` in `deploy/.env` to put the vault somewhere you have chosen.
 
 `docker compose` works identically.
+
+Three containers come up: the app, Postgres, and an embeddings model that powers
+the suggested links in the graph. The model container downloads roughly 440 MB
+of weights the first time it starts and caches them in a named volume; go-notes
+does not wait for it, so the app is usable immediately and suggested links
+simply appear once the model is ready. If you would rather not run it at all,
+set `EMBEDDINGS_ENABLED=false` in `deploy/.env` and stop that container —
+nothing else changes.
 
 ## Production: Caddy + Authelia
 
@@ -348,15 +357,22 @@ provider, if you configure one; Postgres; and the embeddings endpoint, if you
 enable one. An install using local accounts and no embeddings talks to nothing
 but its own database.
 
-Embeddings deserve a sentence of their own, because whether they break the
-air-gap is entirely your choice of `api_base`. Pointed at `http://localhost:11434`
-— Ollama, LM Studio, anything else you run yourself — nothing leaves the host at
-all, and semantic links work on a network with no route out. Pointed at a hosted
-API, the *text of your notes* is sent to it, a passage at a time. There is no
-default host precisely so that this is a decision rather than a discovery, and
-the server logs which one it is at startup. The browser never talks to the model
-either way: the request is made server-side, and the page's
-`connect-src 'self'` would refuse it in any case.
+Embeddings deserve a paragraph of their own, because whether they break the
+air-gap is entirely your choice of `api_base`. The example deployments run the
+model themselves — a `BAAI/bge-base-en-v1.5` container on the internal network,
+publishing no ports — so suggested links work with no route out and the text of
+your notes never leaves the host. Point `api_base` at a hosted API instead and
+that stops being true: the text is sent to them, a passage at a time. The server
+says which of the two it is in the log at startup, and there is no default host
+in the application itself precisely so that this is a decision rather than a
+discovery. The browser never talks to the model either way — the request is made
+server-side, and the page's `connect-src 'self'` would refuse it in any case.
+
+The one thing that does need the internet is the *first* start of that
+container, which fetches about 440 MB of weights from huggingface.co into a
+named volume. On a machine with no route out, populate the volume from one that
+has (`podman volume export` / `import`, or copy the `HF_HOME` directory), or
+build an image with the weights baked in. After that it never asks again.
 
 Container images still have to be built somewhere with a network, or pulled in
 and loaded with `podman load`; that is a build-time dependency, not a runtime
@@ -457,8 +473,40 @@ cargo run -p go-notes-server -- --config ./config.toml serve
 ```sh
 go-notes check      # report where the index disagrees with the filesystem
 go-notes reindex    # rebuild the index from the filesystem
+go-notes embed      # embed any passages that have no vector yet, then relink
+go-notes embed --all  # discard this model's vectors and start again
 go-notes healthcheck
 ```
+
+`embed` is the same work the background worker does on its timer, run to
+completion. Reach for it after a first import, when you would rather not wait,
+and after changing `min_score` — the threshold is applied when links are
+computed, so an existing graph does not move until something recomputes it.
+
+### Tuning what counts as related
+
+`embeddings.min_score` is the one setting worth touching, and the right value
+depends on the model and on your notes. BGE's own documentation is explicit that
+its scores sit in a narrow high band — two *dissimilar* sentences still score
+above 0.5 — so a threshold that sounds strict may not be. The examples ship
+`0.82`, which is a starting point rather than a measured answer.
+
+Look at what you actually got before changing it:
+
+```sh
+podman exec go-notes-postgres psql -U go_notes -c "
+  SELECT round(score::numeric, 3) AS score,
+         s.rel_path AS from_note, t.rel_path AS to_note
+  FROM semantic_links l
+  JOIN notes s ON s.id = l.source_note_id
+  JOIN notes t ON t.id = l.target_note_id
+  ORDER BY score DESC LIMIT 40;"
+```
+
+If the top of that list is pairs you would not have connected yourself, raise
+`min_score`. If it is short and obvious and you wanted more, lower it. Then
+`go-notes embed` to recompute — the vectors are cached by content, so re-running
+after a threshold change costs nothing at the model.
 
 ### The offline smoke test
 
