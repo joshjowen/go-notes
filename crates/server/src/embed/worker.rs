@@ -94,8 +94,27 @@ pub async fn run_once(
         .await
         .context("listing users")?;
 
+    // Held rather than returned, so that an unreachable model does not also stop
+    // the edges being rebuilt from the vectors already stored. Letting `?` out of
+    // the loop meant one passage nobody could embed — a note written while the
+    // model was down, or the first pass after `TRUNCATE ... CASCADE` — kept
+    // `semantic_links` empty even though every other passage had a good vector.
+    // The graph lost every suggestion it already had, until the endpoint came
+    // back. Reported at the end instead, so the worker still backs off.
+    let mut failure: Option<anyhow::Error> = None;
+
     for user_id in users {
-        report.embedded += embed_missing(pool, client, config, user_id).await?;
+        match embed_missing(pool, client, config, user_id).await {
+            Ok(count) => report.embedded += count,
+            Err(err) => {
+                tracing::warn!(
+                    error = ?err,
+                    %user_id,
+                    "could not embed new passages; relinking with the vectors already stored"
+                );
+                failure.get_or_insert(err);
+            }
+        }
 
         let fingerprint = fingerprint(pool, client, user_id).await?;
         if state.seen.get(&user_id) == Some(&fingerprint) {
@@ -105,7 +124,10 @@ pub async fn run_once(
         state.seen.insert(user_id, fingerprint);
     }
 
-    Ok(report)
+    match failure {
+        Some(err) => Err(err),
+        None => Ok(report),
+    }
 }
 
 /// `(passages, highest passage id, passages with a vector)` for one user.
