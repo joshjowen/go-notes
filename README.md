@@ -17,6 +17,9 @@ on disk is still plain `.md` that `grep`, `git` and every other tool understand.
 - **Rich-text editing.** Type `# ` and you get a heading. `/` opens a command
   menu. Tables, task lists and code blocks have real editing affordances. A
   toggle switches to raw markdown when you want it.
+- **Mermaid diagrams.** A code block tagged `mermaid` renders as the diagram it
+  describes, with a button to get back to the source. Mermaid is bundled with
+  everything else, so diagrams draw offline and on an air-gapped network.
 - **`[[Wikilinks]]` with autocomplete.** Type `[[` and pick from your notes.
   Links to notes that do not exist yet render differently, and clicking one
   offers to create it.

@@ -276,3 +276,85 @@
 .milkdown .ProseMirror li {
   margin: 0.2em 0;
 }
+
+/*
+ * Crepe swaps each list item for a node view, so what looks like `<li>text</li>`
+ * is really:
+ *
+ *   div.milkdown-list-item-block > li.list-item
+ *     > div.label-wrapper > span.label      the bullet, number or checkbox
+ *     > div.children > div.content-dom > p  the item's text
+ *
+ * The rules below all exist because styling that as though it were a plain list
+ * item goes wrong in ways that are invisible in the markdown.
+ */
+
+/* A list item's paragraph *is* the item, not a paragraph between items, so it
+   should carry none of a paragraph's spacing. The 0.6em above and below from the
+   rule further up is what made every list read as double-spaced; the 4px of
+   padding Crepe's reset adds on top of that is what pushed each line of text
+   below its own bullet. Two paragraphs *within* one item still want a gap. */
+.milkdown .ProseMirror .milkdown-list-item-block .content-dom > p {
+  margin: 0;
+  padding: 0;
+}
+
+.milkdown .ProseMirror .milkdown-list-item-block .content-dom > p + p {
+  margin-top: 0.6em;
+}
+
+/* Which leaves one line of item text exactly as tall as the `16px/24px` Crepe's
+   reset pins paragraphs to. The label box is fixed at 32px — a height that suits
+   Crepe's own theme, not this one — so it is sized to the same line box, and the
+   bullet and the text it belongs to end up sharing a centre line. */
+.milkdown .ProseMirror .milkdown-list-item-block .label-wrapper,
+.milkdown .ProseMirror .milkdown-list-item-block .label-wrapper .label {
+  height: 24px;
+  padding: 0;
+}
+
+/* A nested list already sits inside its parent item, so the 0.5em the rule above
+   gives every list reads as a gap in the middle of this one. */
+.milkdown .ProseMirror li ul,
+.milkdown .ProseMirror li ol {
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------- diagrams */
+
+/*
+ * Crepe hides a code block's source as soon as a preview renders, and this
+ * editor asks for `previewOnlyByDefault`, so a mermaid block opens as its
+ * diagram alone. Left at that, the collapse also fires *while you are typing*:
+ * the moment a half-written `graph TD` first parses, the code editor is
+ * `display: none`d out from under the caret and the next keystroke goes nowhere.
+ *
+ * Keeping the source visible for as long as the block holds focus settles that,
+ * and it settles rather than oscillates: the declaration keeps displayed the
+ * very element whose focus makes it apply. Click away and the block collapses to
+ * the diagram, which is what the toggle button means by "Edit".
+ *
+ * `!important` because Crepe's `.hidden` uses it too; this selector outweighs it.
+ */
+.milkdown .milkdown-code-block:focus-within .codemirror-host.hidden {
+  display: block !important;
+}
+
+/* Mermaid sizes the SVG to whatever the diagram needs, which on a phone is
+   routinely wider than the pane. The preview panel already scrolls; this stops
+   it having to. */
+.milkdown .milkdown-code-block .preview svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* A diagram that does not parse yet is the normal state of one being written, so
+   the message is quiet and left-aligned against the source above it rather than
+   presented as an error. */
+.gn-mermaid-error {
+  font-family: var(--gn-font-mono);
+  font-size: 0.85em;
+  color: var(--gn-text-muted);
+  text-align: left;
+  white-space: pre-wrap;
+}
