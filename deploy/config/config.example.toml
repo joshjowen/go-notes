@@ -125,6 +125,9 @@ interval_secs = 60
 
 # Most suggested links kept per note, and how similar two passages must be to
 # count. Lowering min_score fills the graph with notes that merely share a
-# register; a graph claiming everything is related says nothing.
+# register; a graph claiming everything is related says nothing. 0.75 is
+# measured against BGE-small-en-v1.5, the example deployments' shipped model —
+# a different model's scores sit in a different band, so retune this rather
+# than carry the number over if you point api_base somewhere else.
 neighbours = 5
-min_score = 0.78
+min_score = 0.70

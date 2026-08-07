@@ -63,11 +63,11 @@ services:
       GO_NOTES__EMBEDDINGS__ENABLED: ${EMBEDDINGS_ENABLED:-true}
       GO_NOTES__EMBEDDINGS__API_BASE: ${EMBEDDINGS_API_BASE:-http://embeddings:80/v1}
       GO_NOTES__EMBEDDINGS__API_KEY: ${EMBEDDINGS_API_KEY:-}
-      GO_NOTES__EMBEDDINGS__MODEL: ${EMBEDDINGS_MODEL:-BAAI/bge-base-en-v1.5}
+      GO_NOTES__EMBEDDINGS__MODEL: ${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}
       # How alike two passages must be before the graph suggests a connection.
       # Worth tuning to your own notes — see the README; BGE's scores sit high,
       # so too low a value connects everything to everything.
-      GO_NOTES__EMBEDDINGS__MIN_SCORE: ${EMBEDDINGS_MIN_SCORE:-0.60}
+      GO_NOTES__EMBEDDINGS__MIN_SCORE: ${EMBEDDINGS_MIN_SCORE:-0.70}
 
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
@@ -135,11 +135,26 @@ services:
   # The embeddings model behind "suggested links", served over the same
   # OpenAI-compatible API go-notes speaks to a hosted provider.
   #
-  # BGE-base-en-v1.5 is a 768-dimension English embedding model, small enough
-  # to run on a CPU — a few hundred milliseconds per batch on a laptop, which
-  # is fine for work that happens in the background and never on a request.
-  # Swap `--model-id` for `BAAI/bge-m3` if your notes are not in English, or
-  # `BAAI/bge-small-en-v1.5` if this container is competing for a very small machine.
+  # BGE-small-en-v1.5 is a 384-dimension English embedding model chosen for CPU
+  # deployments on modest hardware — a NUC-class machine, not a workstation.
+  # Measured on a 4-core budget against BGE-base-en-v1.5: roughly a third of the
+  # latency (a batch of 32 note-length passages: ~0.85s vs ~2.1s), less than
+  # half the resident memory (~340MB vs ~880MB idle), and half the vector width,
+  # which is half the storage and half the arithmetic in the brute-force
+  # note-to-note comparison in similarity.rs. Retrieval quality costs about 1.4
+  # points of MTEB average against base, which does not show up in a personal
+  # vault's worth of notes. Swap `--model-id` for `BAAI/bge-base-en-v1.5` if
+  # this host has CPU and RAM to spare and you want the difference back, or
+  # `BAAI/bge-m3` if your notes are not in English.
+  #
+  # A meaningfully stronger option exists for hosts with RAM to spare —
+  # Qwen/Qwen3-Embedding-0.6B told two lexically-similar but semantically
+  # unrelated notes apart where bge-small confused them. It costs roughly 8x
+  # the idle memory (~2.5GB) and needs `--max-batch-tokens` capped below its
+  # default or it can OOM the host outright during warmup. See the README's
+  # "A stronger model, if you have the hardware" section before switching —
+  # `EMBEDDINGS_MODEL` alone is not enough, `min_score` and `batch_size` both
+  # need retuning too.
   #
   # This publishes no ports: it is reachable only from go-notes on the internal
   # network, so the text of your notes never leaves the host.
@@ -147,9 +162,12 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.3
     restart: unless-stopped
     container_name: go-notes-embeddings
-    command: ["--model-id", "BAAI/bge-base-en-v1.5", "--auto-truncate"]
+    # `${EMBEDDINGS_MODEL}` on purpose, the same variable go-notes itself reads
+    # above — one place to change, not two that can silently disagree about
+    # which model is actually running.
+    command: ["--model-id", "${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}", "--auto-truncate"]
     environment:
-      # Where the weights are cached. The first start downloads roughly 440 MB
+      # Where the weights are cached. The first start downloads roughly 130 MB
       # from huggingface.co and then never needs the internet again; the volume
       # below is what makes that true across restarts. On a machine with no
       # route out, seed this volume from one that has.

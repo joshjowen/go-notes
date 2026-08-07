@@ -50,11 +50,13 @@ Open <http://localhost:8080>. `docker compose` works identically.
 Your notes appear as markdown in `deploy/data/notes/josh/`; set `NOTES_DIR` in
 `deploy/.env` to put the vault somewhere you have chosen.
 
-Three containers start: the app, Postgres, and a BGE-base-en-v1.5 model that
-provides the suggested links. That last one downloads roughly 440 MB of weights
-the first time and caches them in a volume — nothing waits for it, so the app is
-usable immediately. Set `EMBEDDINGS_ENABLED=false` in `deploy/.env` to do
-without it.
+Three containers start: the app, Postgres, and a BGE-small-en-v1.5 model that
+provides the suggested links — sized for a CPU-only, NUC-class host rather than
+a workstation; see the comment beside the `embeddings` service in
+`deploy/docker-compose.yml` for what that trade-off costs against BGE-base.
+That last one downloads roughly 130 MB of weights the first time and caches
+them in a volume — nothing waits for it, so the app is usable immediately. Set
+`EMBEDDINGS_ENABLED=false` in `deploy/.env` to do without it.
 
 ## Production
 
@@ -111,7 +113,7 @@ Browser ── HTTPS ──> Caddy ──> go-notes (axum, :8080) ──> Postgr
                        │            │
                        │            ├──> /data/notes/<user>/**.md   (source of truth)
                        └─ Authelia  │
-                          (OIDC)    └──> embeddings (BGE-base-en-v1.5, optional)
+                          (OIDC)    └──> embeddings (BGE-small-en-v1.5, optional)
 ```
 
 One binary serves the API and the WebAssembly frontend. The server is axum and
@@ -150,8 +152,12 @@ shell history and in `ps`. Use the prompt or `--password-env VARNAME`.
 
 **Tuning suggested links.** `embeddings.min_score` decides how alike two
 passages must be, and the right value depends on your notes. BGE's scores sit in
-a narrow high band — dissimilar text still scores above 0.5 — so the shipped
-`0.82` is a starting point rather than a measured answer. Look at what you got,
+a narrow high band — measured against passages embedded exactly as
+`embed_missing` sends them (heading and body together), unrelated topics still
+scored up to 0.61 and genuine matches started at 0.74 — so the shipped `0.70` is
+a measured starting point for the default BGE-small-en-v1.5, not a guess, but it
+is still a starting point: a different model, or a vault of much shorter or
+longer notes than this was measured on, shifts the band. Look at what you got,
 adjust, and re-run `go-notes embed`; vectors are cached by content, so
 recomputing after a change costs nothing at the model.
 
@@ -163,6 +169,53 @@ podman exec go-notes-postgres psql -U go_notes -c "
   JOIN notes t ON t.id = l.target_note_id
   ORDER BY score DESC LIMIT 40;"
 ```
+
+**A stronger model, if you have the hardware.** BGE-small matches on vocabulary
+more than meaning. Two notes sharing words but not a topic — a note about the
+Mermaid diagramming tool and an unrelated note that happens to mention mermaids,
+architecture and a diagram type by name — scored *higher* against each other
+(0.792) than the real relationship in the same vault (0.742). `Qwen/Qwen3-Embedding-0.6B`
+told them apart cleanly: the real relationship scored 0.669, every false match
+involving the unrelated note scored 0.514 or lower.
+
+That quality costs real resources, and comes with a sharp edge worth knowing
+about before you hit it: Qwen3-Embedding supports sequences up to 32,768
+tokens, against BGE's fixed 512-token limit, and dense attention cost grows
+with the *square* of sequence length. `text-embeddings-inference`'s default
+warmup exercises the full `--max-batch-tokens` budget (16384 by default) —
+which OOM-killed a 14GB host outright before serving a single request. Capping
+it well below default is not optional:
+
+```sh
+# deploy/.env
+EMBEDDINGS_MODEL=Qwen/Qwen3-Embedding-0.6B
+```
+
+and in the compose file's `embeddings` service, add the flag that keeps warmup
+from repeating the OOM above:
+
+```yaml
+command: ["--model-id", "${EMBEDDINGS_MODEL:-BAAI/bge-small-en-v1.5}", "--auto-truncate", "--max-batch-tokens", "2048"]
+```
+
+Two more things change together with the model, both easy to miss:
+
+- **`batch_size`** (`config.toml`, or `GO_NOTES__EMBEDDINGS__BATCH_SIZE`) — the
+  default `32` passages per request no longer fits inside a 2048-token budget.
+  Drop it to `8`.
+- **`min_score`** — Qwen's scores sit on a completely different scale than
+  BGE's, not just a shifted version of the same one (1024 dimensions against
+  384, a different training objective entirely). Carrying over `0.70` would
+  filter out the real 0.669 match above. Re-measure using the query in the
+  previous section after switching; `0.55`–`0.60` is a starting point based on
+  the gap measured here, not a settled number.
+
+Budget roughly 8x the idle memory of bge-small (~2.5GB against ~340MB) and a
+warmup in the tens of seconds rather than instant. Worth it on a host with RAM
+to spare and notes where lexical overlap without topical overlap is a real
+risk (a personal wiki that reuses the same handful of words for different
+things); not worth it as a default on the NUC-class hardware this project is
+sized for, which is why bge-small stays the shipped choice.
 
 ## Good to know
 
