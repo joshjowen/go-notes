@@ -35,6 +35,17 @@ enum Command {
     /// Manage accounts in the local users file.
     #[command(subcommand)]
     User(UserCommand),
+    /// End every browser session for a user, signing them out everywhere.
+    ///
+    /// Works for Authelia (OIDC) accounts as well as local ones, which is the
+    /// point: removing someone upstream, or from the required group, does not
+    /// reach go-notes' own sessions, so without this a deprovisioned user keeps
+    /// access until their session simply expires. `user remove` only edits the
+    /// local file and cannot touch an OIDC user at all.
+    Logout {
+        /// The username to sign out. Case-insensitive, as sign-in is.
+        username: String,
+    },
     /// Report where the index disagrees with the filesystem, without changing it.
     Check,
     /// Rebuild the index from the filesystem.
@@ -90,6 +101,7 @@ async fn main() -> Result<()> {
         Command::Serve => serve(config).await,
         Command::Healthcheck => healthcheck(&config).await,
         Command::User(command) => user_command(&config, command),
+        Command::Logout { username } => logout_user(config, username).await,
         Command::Check => reindex(config, true).await,
         Command::Reindex => reindex(config, false).await,
         Command::Embed { all } => embed_command(config, all).await,
@@ -395,6 +407,45 @@ async fn reindex(config: Config, dry_run: bool) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Ends every server-side session for a user.
+///
+/// Sessions live in Postgres, so unlike the file-only `user` subcommands this
+/// has to connect. It looks the user up by name — reaching OIDC and local
+/// accounts alike — and deletes their session rows, which takes effect on the
+/// user's very next request because sessions are validated against the database
+/// every time rather than trusted from the cookie.
+async fn logout_user(config: Config, username: String) -> Result<()> {
+    let pool = db::connect(&config.database).await?;
+    db::migrate(&pool).await?;
+
+    let Some(user) = db::find_user_by_username(&pool, &username).await? else {
+        // Deliberately specific: a user only exists here once they have signed
+        // in at least once, which is a common source of "but I added them".
+        bail!(
+            "no user '{username}' has signed in to this server yet, so there are no sessions to end"
+        );
+    };
+
+    let ended = go_notes_server::auth::session::destroy_all_for_user(&pool, user.id).await?;
+    match ended {
+        0 => println!("'{}' had no active sessions.", user.username),
+        1 => println!("Ended 1 session for '{}'.", user.username),
+        n => println!("Ended {n} sessions for '{}'.", user.username),
+    }
+    if user.auth_provider == go_notes_server::auth::PROVIDER_OIDC {
+        // The go-notes session is gone, but Authelia's is not: if they still
+        // hold a valid Authelia session they can sign straight back in. Say so,
+        // because the operator's intent when running this is usually to lock
+        // someone out, not just to clear one of two doors.
+        println!(
+            "Note: this is an Authelia account. To keep them out, also remove them from the \
+             required group (or disable the account) in Authelia — otherwise they can sign in \
+             again immediately."
+        );
+    }
     Ok(())
 }
 

@@ -37,10 +37,14 @@ authentication_backend:
 access_control:
   default_policy: deny
   rules:
-    # `one_factor` means a password. Change to `two_factor` to require TOTP as
-    # well, which is the main reason to put Authelia in front of anything.
+    # `two_factor` requires a password *and* a TOTP code — the main reason to put
+    # Authelia in front of anything, and the reason this example defaults to it.
+    # On first sign-in each user is walked through enrolling an authenticator;
+    # the enrolment link is written to the notifier file below (see
+    # notification.txt) since this example does not send real mail. Drop to
+    # `one_factor` only if you have a specific reason to accept password-only.
     - domain: notes.example.com
-      policy: one_factor
+      policy: two_factor
       subject:
         - 'group:notes'
 
@@ -118,7 +122,9 @@ identity_providers:
         client_secret: '$pbkdf2-sha512$310000$1stqaoZoxO81SC1sq1LIFQ$ZshfqBg3Dxzw.SitbigjxkPo8FFCNfPYmSzdEfAPJnGCWe.zzqoFdJmUvPu3PRMOc9e5R8ZoQLjMgch4G.8NnQ'
 
         public: false
-        authorization_policy: 'one_factor'
+        # Matches the access-control policy above: completing the OIDC flow for
+        # go-notes requires the second factor too.
+        authorization_policy: 'two_factor'
         require_pkce: true
         pkce_challenge_method: 'S256'
 

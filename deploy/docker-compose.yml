@@ -64,9 +64,24 @@ services:
       GO_NOTES__AUTH__OIDC__CLIENT_ID: go-notes
       GO_NOTES__AUTH__OIDC__CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET in .env}
 
-      # Password login stays available as a way back in if Authelia is down.
-      # Set it to "false" if you would rather have exactly one route in.
-      GO_NOTES__AUTH__LOCAL__ENABLED: "true"
+      # Re-check group membership in go-notes itself, not just in Authelia's
+      # access-control rule. Defence in depth: a misconfigured Authelia client
+      # policy that admitted everyone would still be caught here. Must match the
+      # group named in deploy/authelia/configuration.yml.
+      GO_NOTES__AUTH__OIDC__REQUIRED_GROUP: ${OIDC_REQUIRED_GROUP:-notes}
+
+      # Password login is OFF by default on this internet-facing stack, and that
+      # is deliberate. There is no forward-auth here, so /api/auth/login is a
+      # native go-notes endpoint reachable straight from the internet — it does
+      # NOT get Authelia's brute-force regulation or its second factor, only
+      # go-notes' own in-memory throttle. Left on, it is a permanently-open,
+      # single-factor password door beside the hardened OIDC one.
+      #
+      # Keep it off unless you specifically need a break-glass account for when
+      # Authelia is down — and if you do turn it on (LOCAL_AUTH_ENABLED=true in
+      # .env), restrict /api/auth/login to your LAN/VPN in the Caddyfile. See the
+      # commented matcher in deploy/caddy/Caddyfile.
+      GO_NOTES__AUTH__LOCAL__ENABLED: ${LOCAL_AUTH_ENABLED:-false}
 
       # Suggested links: notes that are *about* the same thing without linking
       # to each other, drawn as dashed edges in the graph. Served by the

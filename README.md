@@ -140,6 +140,7 @@ original path underneath, so a mis-click is undone with `mv`.
 
 ```sh
 go-notes user add josh    # add, or change a password. Also: list, remove
+go-notes logout josh      # end all of a user's sessions (works for OIDC too)
 go-notes check            # report where the index disagrees with the filesystem
 go-notes reindex          # rebuild the index from the filesystem
 go-notes embed            # embed new passages and recompute suggested links
@@ -242,7 +243,16 @@ sized for, which is why bge-small stays the shipped choice.
 - Sessions are opaque tokens stored only as their SHA-256, so a database dump
   yields no working cookies. Writes need a same-origin `Origin` header on top of
   a `SameSite=Lax` cookie, and carry an `If-Match` hash so a concurrent edit
-  becomes a conflict you resolve rather than silent data loss.
+  becomes a conflict you resolve rather than silent data loss. To sign someone
+  out everywhere — including an Authelia account, which `user remove` cannot
+  touch — run `go-notes logout <username>`.
+- Over HTTPS the server sends `Strict-Transport-Security` itself (gated on
+  `auth.cookie_secure`, so a plain-HTTP dev instance never does). The example
+  Authelia stack requires a second factor, and re-checks group membership in
+  go-notes as well as in Authelia. The password login is a native endpoint that
+  bypasses Authelia, so it is **off by default** in the public compose file;
+  turn it on only as a break-glass route and restrict it to your LAN/VPN at the
+  proxy.
 - Uploads are typed by sniffing their contents, never the client's claim. Only
   what a browser renders safely is served inline; everything else, **including
   SVG**, downloads.

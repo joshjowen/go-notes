@@ -27,8 +27,11 @@ watch_filesystem = true
 # lost or corrupted database is a non-event.
 reconcile_on_start = true
 
-# Read the client address from X-Forwarded-For. Correct behind Caddy. Only login
-# throttling uses it, never authorisation.
+# Read the client address from X-Forwarded-For. Correct behind Caddy, which
+# overwrites the header with the real peer. Only login throttling uses it, never
+# authorisation. Set this to FALSE if go-notes is ever reachable directly rather
+# than only through the proxy: there the header is client-controlled, and a
+# spoofed value makes the per-address login throttle trivially bypassable.
 trust_proxy_headers = true
 
 [database]
@@ -40,6 +43,11 @@ max_connections = 10
 connect_timeout_secs = 60
 
 [auth]
+# How long a session lasts, refreshed on use. 30 days suits a personal vault.
+# For a public multi-user deployment, prefer something shorter (1–7): group
+# membership is checked at sign-in, not per request, so this is also the window
+# for which a user removed from the group upstream keeps access. To cut it
+# immediately for one person, run `go-notes logout <username>`.
 session_ttl_days = 30
 
 # Sends the Secure cookie flag. Turn this off *only* for plain-HTTP local
@@ -48,8 +56,12 @@ session_ttl_days = 30
 cookie_secure = true
 
 [auth.local]
-# Username and password against a JSON file. Useful on its own, and worth
-# keeping enabled alongside OIDC as a way back in if Authelia is unavailable.
+# Username and password against a JSON file. Fine as the only method on a
+# private/LAN instance. But when OIDC is your public front door, think twice
+# before leaving this on: /api/auth/login is served directly by go-notes, so it
+# does NOT get Authelia's brute-force ban or second factor — only go-notes' own
+# in-memory throttle. If you keep it as a break-glass account, restrict that one
+# endpoint to your LAN/VPN at the proxy (see deploy/caddy/Caddyfile).
 enabled = true
 users_file = "/config/users.json"
 
@@ -64,8 +76,10 @@ client_secret = "CHANGE_ME"
 
 scopes = ["openid", "profile", "email", "groups"]
 
-# When set, only users whose `groups` claim contains this may sign in.
-# required_group = "notes"
+# When set, only users whose `groups` claim contains this may sign in. Worth
+# setting even when Authelia already restricts the group: it re-checks in
+# go-notes, so a misconfigured provider policy cannot quietly admit everyone.
+required_group = "notes"
 
 button_label = "Sign in with Authelia"
 

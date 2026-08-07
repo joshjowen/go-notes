@@ -130,7 +130,11 @@ fn inline_script_hashes() -> Vec<String> {
 }
 
 /// Adds the response headers that constrain what a page can do.
-pub async fn security_headers(request: Request, next: Next) -> Response {
+pub async fn security_headers(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -152,7 +156,30 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
         HeaderValue::from_static("DENY"),
     );
 
+    if let Some(hsts) = strict_transport_security(state.config.auth.cookie_secure) {
+        headers.insert(header::STRICT_TRANSPORT_SECURITY, hsts);
+    }
+
     response
+}
+
+/// The `Strict-Transport-Security` value for a deployment, or `None` when it
+/// must not be sent.
+///
+/// This is tied to `cookie_secure` because both answer the same question — "is
+/// this deployment served over HTTPS?" — from the one setting an operator
+/// already has to get right for sessions to work at all. Sending HSTS is only
+/// meaningful over TLS, and actively harmful otherwise: a browser that once saw
+/// this header for a hostname will refuse plain `http://` to that name for the
+/// lifetime of `max-age`, which on a LAN name reused for a plain-HTTP service is
+/// a self-inflicted outage. So a dev instance (`cookie_secure = false`) sends
+/// nothing, and a real HTTPS instance pins for two years including subdomains.
+///
+/// `preload` is deliberately omitted: submitting a domain to the browser preload
+/// list is effectively irreversible and is the operator's decision to make in
+/// the Caddyfile, not one this default should make for them.
+fn strict_transport_security(cookie_secure: bool) -> Option<HeaderValue> {
+    cookie_secure.then(|| HeaderValue::from_static("max-age=63072000; includeSubDomains"))
 }
 
 /// Rejects state-changing requests that came from another origin.
@@ -373,6 +400,20 @@ mod tests {
         assert_eq!(content_type_for("icons/icon-192.png"), "image/png");
         assert_eq!(content_type_for("index.html"), "text/html");
         assert_eq!(content_type_for("sw.js"), "text/javascript");
+    }
+
+    /// Plain-HTTP development must never emit HSTS: a browser that saw it once
+    /// would then refuse to load the same hostname over http:// at all.
+    #[test]
+    fn hsts_is_sent_only_when_cookies_are_secure() {
+        assert_eq!(strict_transport_security(false), None);
+
+        let value = strict_transport_security(true).expect("HSTS on a secure deployment");
+        let text = value.to_str().unwrap();
+        assert!(text.contains("max-age="), "{text} should set a max-age");
+        assert!(text.contains("includeSubDomains"));
+        // Preload is the operator's irreversible choice, not this default's.
+        assert!(!text.contains("preload"), "{text} must not opt into preload");
     }
 
     #[test]
