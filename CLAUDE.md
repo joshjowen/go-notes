@@ -76,13 +76,22 @@ receive a validated `VaultPath`, never a `String`, and `vault/` is the only
 module that touches the filesystem. Both files carry more comment than usual
 because mistakes there are expensive.
 
+`crates/shared/src/links.rs` is there for the same reason: it decides where the
+relation ends and the target begins in `[[contradicts::Budget]]`, and the server
+and the offline index both call it rather than each having a copy. The rule does
+exist a third time, in `editor/src/wikilink-mdast.ts`, because TypeScript cannot
+call Rust — that copy is kept honest by `editor/test/roundtrip.test.mjs`, which
+covers the same cases as the Rust tests. Anything that changes what a link means
+has to change all three together, or a link resolves on one side and not the
+other.
+
 ### One binary, three source trees
 
 | Path | What it is |
 |---|---|
 | `crates/server/` | axum + sqlx backend; SQL is runtime strings, so only the `integration` tests prove it parses |
 | `crates/ui/` | Leptos CSR frontend, compiled to WASM by Trunk |
-| `crates/shared/` | DTOs and path rules; must stay `wasm32`-clean (no tokio, sqlx, fs) |
+| `crates/shared/` | DTOs, path rules and link syntax; must stay `wasm32`-clean (no tokio, sqlx, fs) |
 | `editor/` | the Milkdown/ProseMirror bridge, the only JavaScript in the project |
 
 The editor is reached from Rust through `window.GoNotesEditor` — a ~10-function

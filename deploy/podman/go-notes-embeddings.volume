@@ -1,0 +1,12 @@
+# Cached model weights for the embeddings container.
+#
+# A named volume rather than a bind mount, for the same reason as pgdata: it is
+# derived state nothing else should touch. It matters more than it looks — the
+# first start downloads a few hundred megabytes, and this is what stops that
+# happening again on every restart.
+
+[Unit]
+Description=go-notes embeddings model cache
+
+[Volume]
+VolumeName=go-notes-embeddings

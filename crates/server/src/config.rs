@@ -17,6 +17,65 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
     pub uploads: UploadConfig,
+    pub embeddings: EmbeddingsConfig,
+}
+
+/// A secret that does not print itself.
+///
+/// `Config` derives `Debug`, and one `tracing::debug!` of it would put an API
+/// key in the log. Wrapping the value makes that impossible rather than merely
+/// unlikely. `auth.oidc.client_secret` predates this and should adopt it too.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() { "\"\"" } else { "\"***\"" })
+    }
+}
+
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Secret(value)
+    }
+}
+
+/// Semantic links, drawn from an OpenAI-compatible embeddings endpoint.
+///
+/// Off by default and with no host preset, because the two things people run —
+/// a model on this machine and a hosted API — differ in whether using it means
+/// anything leaves the network. Guessing either way would be wrong for the other.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingsConfig {
+    pub enabled: bool,
+    /// Base URL up to but not including `/embeddings`, e.g.
+    /// `http://localhost:11434/v1` or `https://api.openai.com/v1`.
+    pub api_base: String,
+    /// Bearer token. Normally empty for a model running on this machine.
+    pub api_key: Secret,
+    pub model: String,
+    /// Requested vector width; 0 leaves it to the model.
+    pub dimensions: u32,
+    /// Passages per request to the model.
+    pub batch_size: usize,
+    pub timeout_secs: u64,
+    /// How often the worker looks for passages that have not been embedded.
+    pub interval_secs: u64,
+    /// Most semantic edges kept per note.
+    pub neighbours: usize,
+    /// Similarity below which two passages are not considered related.
+    pub min_score: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +190,21 @@ impl Default for Config {
                     end_session: true,
                 },
             },
+            embeddings: EmbeddingsConfig {
+                enabled: false,
+                api_base: String::new(),
+                api_key: Secret::default(),
+                model: String::new(),
+                dimensions: 0,
+                batch_size: 32,
+                timeout_secs: 30,
+                interval_secs: 60,
+                neighbours: 5,
+                // Chosen high on purpose. A threshold that is too low fills the
+                // graph with edges between notes that merely share a register,
+                // and a graph that claims everything is related says nothing.
+                min_score: 0.78,
+            },
             uploads: UploadConfig {
                 max_bytes: 25 * 1024 * 1024,
                 allowed_extensions: [
@@ -194,6 +268,39 @@ impl Config {
                 );
             }
         }
+        if self.embeddings.enabled {
+            if self.embeddings.api_base.is_empty() {
+                bail!("embeddings.enabled is set but embeddings.api_base is empty");
+            }
+            if self.embeddings.model.is_empty() {
+                bail!("embeddings.enabled is set but embeddings.model is empty");
+            }
+            if self.embeddings.batch_size == 0 {
+                bail!("embeddings.batch_size must be at least 1");
+            }
+            // A hosted endpoint with no key fails on the first request with a
+            // 401 the user will find in a log an hour later; a local one with no
+            // key is completely normal. Only one of those is worth a warning.
+            if self.embeddings.api_key.is_empty()
+                && reaches_the_public_internet(&self.embeddings.api_base)
+            {
+                tracing::warn!(
+                    api_base = %self.embeddings.api_base,
+                    "embeddings.api_key is empty and embeddings.api_base is not on this \
+                     machine or its network; the endpoint will probably refuse every request"
+                );
+            }
+            if reaches_the_public_internet(&self.embeddings.api_base) {
+                // Said plainly, once, at startup: this is the one setting in the
+                // application that can make an air-gapped deployment talk to
+                // somebody else's server.
+                tracing::info!(
+                    api_base = %self.embeddings.api_base,
+                    "the text of notes will be sent to this embeddings endpoint, \
+                     which is outside this machine and its network"
+                );
+            }
+        }
         if self.server.public_url.ends_with('/') {
             bail!("server.public_url must not have a trailing slash");
         }
@@ -215,6 +322,102 @@ impl Config {
     }
 }
 
+/// The hostname out of a URL, without scheme, credentials, port or path.
+fn host_of(url: &str) -> &str {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    // A bracketed IPv6 literal keeps its colons, so the port can only be split
+    // off after the closing bracket — `[::1]:8080` cut at the first colon leaves
+    // `[`, which matches nothing and would have quietly called every local IPv6
+    // endpoint remote.
+    match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => host.split(':').next().unwrap_or(""),
+    }
+}
+
+/// Whether a URL names this machine.
+fn is_loopback(url: &str) -> bool {
+    let host = host_of(url);
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+        || host.starts_with("127.")
+        || host.ends_with(".localhost")
+}
+
+/// Whether reaching this URL plausibly means leaving the machine and its network.
+///
+/// This decides two log lines — whether a missing API key is worth warning about,
+/// and whether to say that notes are being sent somewhere — so it has to be right
+/// about the shapes people actually write, and the container case is the one that
+/// matters most. `http://embeddings:80/v1` is another container on an internal
+/// network; treating it as remote made the shipped example warn, on every start,
+/// that an endpoint sitting beside it "will probably refuse every request".
+///
+/// The rule is therefore: a single-label name is a container or a LAN host, a
+/// private address range is a private network, and a handful of reserved suffixes
+/// are by definition not routable. Everything else has a dotted public-looking
+/// name, which is what a hosted API always has.
+///
+/// It cannot be exact — a company's `notes.internal.example.com` resolves inside
+/// the building and still counts as public here. The consequence of being wrong
+/// that way is one extra line in a log saying data may leave, which is the safe
+/// direction to be wrong in.
+fn reaches_the_public_internet(url: &str) -> bool {
+    let host = host_of(url);
+    if host.is_empty() || is_loopback(url) {
+        return false;
+    }
+
+    // Kubernetes, Docker and Podman all resolve bare service names on an
+    // internal network. Nothing on the public internet is reachable by one.
+    if !host.contains('.') {
+        return false;
+    }
+
+    const PRIVATE_SUFFIXES: [&str; 7] = [
+        ".local",
+        ".internal",
+        ".lan",
+        ".home",
+        ".home.arpa",
+        ".svc",
+        ".cluster.local",
+    ];
+    if PRIVATE_SUFFIXES.iter().any(|suffix| host.ends_with(suffix)) {
+        return false;
+    }
+
+    !is_private_address(host)
+}
+
+/// RFC 1918 and friends, for a host written as a literal address.
+fn is_private_address(host: &str) -> bool {
+    let octets: Vec<&str> = host.split('.').collect();
+    if octets.len() != 4 || !octets.iter().all(|o| o.parse::<u8>().is_ok()) {
+        // Not a dotted-quad, so nothing here applies. IPv6 unique-local is not
+        // chased down: nobody configures one of these by hand.
+        return false;
+    }
+    let first: u8 = octets[0].parse().unwrap_or(0);
+    let second: u8 = octets[1].parse().unwrap_or(0);
+    match first {
+        10 => true,
+        127 => true,
+        172 => (16..=31).contains(&second),
+        192 => second == 168,
+        169 => second == 254,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +433,112 @@ mod tests {
         config.auth.local.enabled = false;
         config.auth.oidc.enabled = false;
         assert!(config.validate().is_err());
+    }
+
+
+    #[test]
+    fn rejects_incomplete_embeddings_setup() {
+        let mut config = Config::default();
+        config.embeddings.enabled = true;
+        assert!(
+            config.validate().is_err(),
+            "embeddings without an endpoint must not start"
+        );
+
+        config.embeddings.api_base = "http://localhost:11434/v1".into();
+        assert!(
+            config.validate().is_err(),
+            "embeddings without a model must not start"
+        );
+
+        config.embeddings.model = "nomic-embed-text".into();
+        assert!(config.validate().is_ok(), "a local model needs no API key");
+
+        config.embeddings.batch_size = 0;
+        assert!(
+            config.validate().is_err(),
+            "a batch size of zero would spin without ever sending anything"
+        );
+    }
+
+    /// A hosted endpoint with no key is a mistake and a local one with no key is
+    /// normal, so only one of them is worth saying anything about. Neither is
+    /// fatal — the endpoint decides that, not this.
+    #[test]
+    fn a_missing_api_key_is_a_warning_and_never_an_error() {
+        let mut config = Config::default();
+        config.embeddings.enabled = true;
+        config.embeddings.api_base = "https://api.openai.com/v1".into();
+        config.embeddings.model = "text-embedding-3-small".into();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn loopback_is_recognised_in_the_shapes_people_write() {
+        assert!(is_loopback("http://localhost:11434/v1"));
+        assert!(is_loopback("http://127.0.0.1:1234/v1"));
+        assert!(is_loopback("http://[::1]:8080/v1"));
+        assert!(is_loopback("http://ollama.localhost/v1"));
+        assert!(!is_loopback("https://api.openai.com/v1"));
+        assert!(!is_loopback("https://localhost.example.com/v1"));
+    }
+
+    /// The case that matters most, because it is what the shipped compose files
+    /// use: a sibling container reached by service name. Calling that "not local"
+    /// made the example warn on every start that the endpoint beside it would
+    /// probably refuse every request.
+    #[test]
+    fn a_container_on_an_internal_network_is_not_the_public_internet() {
+        assert!(!reaches_the_public_internet("http://embeddings:80/v1"));
+        assert!(!reaches_the_public_internet("http://go-notes-embeddings:80/v1"));
+        assert!(!reaches_the_public_internet("http://ollama:11434/v1"));
+    }
+
+    #[test]
+    fn private_networks_and_reserved_names_are_not_the_public_internet() {
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8080/v1",
+            "http://10.0.0.5:8080/v1",
+            "http://192.168.1.20:8080/v1",
+            "http://172.16.4.4:8080/v1",
+            "http://172.31.255.1:8080/v1",
+            "http://box.local:8080/v1",
+            "http://models.internal:8080/v1",
+            "http://tei.default.svc.cluster.local/v1",
+        ] {
+            assert!(!reaches_the_public_internet(url), "{url} should be private");
+        }
+    }
+
+    #[test]
+    fn a_hosted_api_is_the_public_internet() {
+        for url in [
+            "https://api.openai.com/v1",
+            "https://api.mistral.ai/v1",
+            "https://embeddings.example.com/v1",
+            // Outside RFC 1918, so it is only reachable by routing there.
+            "http://172.32.0.1:8080/v1",
+            "http://8.8.8.8/v1",
+        ] {
+            assert!(reaches_the_public_internet(url), "{url} should be public");
+        }
+    }
+
+    /// A secret that prints itself is a secret in a log file.
+    #[test]
+    fn a_secret_does_not_appear_in_debug_output() {
+        let config = Config {
+            embeddings: EmbeddingsConfig {
+                api_key: Secret::from("sk-hunter2".to_string()),
+                ..Config::default().embeddings
+            },
+            ..Config::default()
+        };
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("hunter2"), "the API key was printed");
+        assert!(printed.contains("***"));
     }
 
     #[test]

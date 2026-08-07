@@ -19,6 +19,13 @@ export function createServer() {
   const notes = new Map(); // path -> markdown
   notes.set('Kitchen.md', '# Kitchen\n\nquotes are in\n');
   notes.set('Budget.md', '# Budget\n\n');
+  // A list and a diagram, for the rendering checks at the end of the flow. Both
+  // are here rather than in `Kitchen.md` so that the offline cycle above keeps
+  // typing into a note whose first line is a plain paragraph.
+  notes.set(
+    'Diagram.md',
+    '# Diagram\n\n- first item\n- second item\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n',
+  );
 
   const state = { reachable: true, signedIn: false, requests: [] };
 

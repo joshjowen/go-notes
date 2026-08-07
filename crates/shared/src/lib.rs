@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod links;
 pub mod paths;
 
 /// Header used for optimistic-concurrency checks when saving a note.
@@ -25,6 +26,14 @@ pub struct Me {
     /// `"local"` or `"oidc"` — the frontend uses this to decide whether the
     /// logout button should also bounce through the identity provider.
     pub auth_provider: String,
+    /// Whether this server has an embeddings model configured.
+    ///
+    /// Rides along with the identity because that is the one thing the app
+    /// fetches for a signed-in user, and a whole endpoint for one boolean would
+    /// be a round trip on every load. It is here rather than on `AuthInfo`
+    /// because that is only ever read by the login screen.
+    #[serde(default)]
+    pub semantic_links: bool,
 }
 
 /// What the login screen should offer, fetched before the user authenticates.
@@ -217,10 +226,44 @@ pub struct GraphNode {
     pub unresolved: bool,
 }
 
+/// What kind of relationship an edge represents.
+///
+/// The distinction is worth drawing because the three are not equally certain.
+/// A `Link` is a fact about the file; a `Typed` link is that plus a word the
+/// author chose for it; a `Semantic` edge is a machine's guess, and the graph
+/// draws it as one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeKind {
+    /// An ordinary `[[wikilink]]`, embed, or inline markdown link.
+    #[default]
+    Link,
+    /// A `[[relation::Note]]` link, carrying the author's own word for it.
+    Typed,
+    /// Not a link at all: two passages a model found similar. A suggestion, and
+    /// drawn as one.
+    Semantic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GraphEdge {
     pub source: u32,
     pub target: u32,
+    /// Absent in older payloads, which only ever meant `Link`.
+    #[serde(default)]
+    pub kind: EdgeKind,
+    /// The author's word for the relationship. Only ever set on `Typed`.
+    #[serde(default)]
+    pub relation: Option<String>,
+    /// How strongly the two are tied: 1.0 for a link somebody wrote, the
+    /// similarity score for a `Semantic` edge. Drives both how faintly the edge
+    /// is drawn and how hard its spring pulls.
+    #[serde(default = "unit_weight")]
+    pub weight: f32,
+}
+
+fn unit_weight() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

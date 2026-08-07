@@ -188,3 +188,80 @@ test('repeated round trips reach a fixed point immediately', () => {
   assert.equal(once, twice)
   assert.equal(once, input)
 })
+
+// --------------------------------------------------------------- typed links
+//
+// These mirror `relation_tests` in `crates/shared/src/links.rs`. That module is
+// the rule; this file is the third implementation of it, in a language that
+// cannot share the code, so the cases have to be kept in step by hand.
+
+test('a typed link survives a round trip', () => {
+  assert.equal(
+    roundTrip('This [[contradicts::Kitchen Reno]] entirely.\n'),
+    'This [[contradicts::Kitchen Reno]] entirely.\n'
+  )
+})
+
+test('a typed link parses into a relation and a target', () => {
+  const [link] = splitTextValue('[[contradicts::Kitchen]]')
+  assert.equal(link.type, 'wikiLink')
+  assert.equal(link.relation, 'contradicts')
+  assert.equal(link.value, 'Kitchen')
+})
+
+test('a typed link keeps its anchor and alias', () => {
+  const input = "See [[supersedes::Projects/Budget#Q3|last year's]] plan.\n"
+  assert.equal(roundTrip(input), input)
+
+  const [link] = splitTextValue("[[supersedes::Projects/Budget#Q3|last year's]]")
+  assert.equal(link.relation, 'supersedes')
+  assert.equal(link.value, 'Projects/Budget')
+  assert.equal(link.anchor, 'Q3')
+  assert.equal(link.alias, "last year's")
+})
+
+test('an embed can be typed', () => {
+  assert.equal(roundTrip('![[illustrates::Diagram]]\n'), '![[illustrates::Diagram]]\n')
+})
+
+// The guard, and the whole reason it exists: a vault written before typed links
+// existed must keep meaning what it meant. A target that merely contains `::`
+// is a target.
+test('a target that only contains colons is not a typed link', () => {
+  assert.equal(roundTrip('See [[C++::Notes]].\n'), 'See [[C++::Notes]].\n')
+
+  const [link] = splitTextValue('[[C++::Notes]]')
+  assert.equal(link.relation, null)
+  assert.equal(link.value, 'C++::Notes')
+})
+
+test('a relation with no target is not a typed link', () => {
+  const [link] = splitTextValue('[[relates::]]')
+  assert.equal(link.relation, null)
+  assert.equal(link.value, 'relates::')
+})
+
+test('an overlong label is a target, not a relation', () => {
+  const long = 'a'.repeat(33)
+  const [link] = splitTextValue(`[[${long}::Note]]`)
+  assert.equal(link.relation, null)
+  assert.equal(link.value, `${long}::Note`)
+})
+
+test('only the first pair of colons splits a typed link', () => {
+  const [link] = splitTextValue('[[cites::std::vector]]')
+  assert.equal(link.relation, 'cites')
+  assert.equal(link.value, 'std::vector')
+})
+
+test('the relation is not shown to the reader', () => {
+  // The link reads as the note it points at; the relation is in the tooltip.
+  assert.equal(displayText({ value: 'Kitchen', alias: null }), 'Kitchen')
+})
+
+test('typed links reach a fixed point like every other link', () => {
+  const input = 'A [[contradicts::B]] and [[C]] and ![[cites::D|e]].\n'
+  const once = roundTrip(input)
+  assert.equal(once, input)
+  assert.equal(roundTrip(once), once)
+})

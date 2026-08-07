@@ -209,6 +209,218 @@ async fn links_resolve_and_produce_backlinks() {
     harness.cleanup().await;
 }
 
+/// A typed link is a link first. It has to resolve, produce a backlink and heal
+/// exactly as an untyped one does — the relation is extra, not different — and
+/// the relation itself has to survive the trip through the index.
+///
+/// This is also the only test that compiles the widened `replace_links` insert
+/// and the graph handler's `relation` column, since the SQL in this project is
+/// runtime strings.
+#[tokio::test]
+async fn typed_links_resolve_and_keep_their_relation() {
+    let harness = Harness::new("typed").await;
+
+    harness
+        .write(
+            "Plan.md",
+            "This [[contradicts::Budget]] and also mentions [[Budget]].\n",
+        )
+        .await;
+    harness.write("Budget.md", "The numbers.\n").await;
+
+    assert_eq!(
+        harness.outgoing("Plan.md").await,
+        vec![
+            ("Budget".to_string(), Some("Budget.md".to_string())),
+            ("Budget".to_string(), Some("Budget.md".to_string())),
+        ],
+        "the relation must not leak into the target, or neither link resolves"
+    );
+    // Two mentions, because there are two links. The backlinks pane lists
+    // mentions rather than notes, and a typed link is one of them.
+    assert_eq!(
+        harness.backlinks("Budget.md").await,
+        vec!["Plan.md", "Plan.md"]
+    );
+
+    let relations: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT l.relation
+         FROM links l
+         JOIN notes source ON source.id = l.source_note_id
+         WHERE source.user_id = $1 AND source.rel_path = $2
+         ORDER BY l.ordinal",
+    )
+    .bind(harness.user.id)
+    .bind("Plan.md")
+    .fetch_all(&harness.pool)
+    .await
+    .expect("relations");
+    assert_eq!(relations, vec![Some("contradicts".to_string()), None]);
+
+    harness.cleanup().await;
+}
+
+/// Passages are written by the ordinary save path, in the same transaction as
+/// the links and the tags.
+///
+/// This is the offline-replay proof. A save made with no network is queued in
+/// the browser and replayed later through exactly this handler, so if passages
+/// appear here they appear for a replayed edit too — there is no second code
+/// path that could be missing them, and this test is what says so.
+#[tokio::test]
+async fn saving_a_note_writes_its_passages() {
+    let harness = Harness::new("chunks").await;
+
+    let long = "This paragraph is long enough to be worth embedding, which means \
+                clearing the minimum length the chunker imposes on a passage.";
+    harness
+        .write("Note.md", &format!("# One\n\n{long}\n\n# Two\n\n{long} Again.\n"))
+        .await;
+
+    let chunks: Vec<(i32, String, String)> = sqlx::query(
+        "SELECT c.ordinal, c.heading, c.body_hash
+         FROM note_chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE c.user_id = $1 AND n.rel_path = $2
+         ORDER BY c.ordinal",
+    )
+    .bind(harness.user.id)
+    .bind("Note.md")
+    .fetch_all(&harness.pool)
+    .await
+    .expect("chunks")
+    .into_iter()
+    .map(|row| (row.get("ordinal"), row.get("heading"), row.get("body_hash")))
+    .collect();
+
+    assert_eq!(chunks.len(), 2, "one passage per section");
+    assert_eq!(chunks[0].1, "One");
+    assert_eq!(chunks[1].1, "Two");
+    assert_ne!(chunks[0].2, chunks[1].2, "different text, different hash");
+
+    // Editing the second section must leave the first one's hash alone, or every
+    // save re-embeds the whole note and the cache buys nothing.
+    let first_hash_before = chunks[0].2.clone();
+    harness
+        .write(
+            "Note.md",
+            &format!("# One\n\n{long}\n\n# Two\n\n{long} Rewritten entirely.\n"),
+        )
+        .await;
+
+    let after: Vec<String> = sqlx::query_scalar(
+        "SELECT c.body_hash
+         FROM note_chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE c.user_id = $1 AND n.rel_path = $2
+         ORDER BY c.ordinal",
+    )
+    .bind(harness.user.id)
+    .bind("Note.md")
+    .fetch_all(&harness.pool)
+    .await
+    .expect("chunks after");
+
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0], first_hash_before, "the untouched section re-embedded");
+    assert_ne!(after[1], chunks[1].2);
+
+    // Deleting the note takes its passages with it, rather than leaving rows
+    // pointing at a note that no longer exists.
+    index::remove_note(&harness.pool, harness.user.id, "Note.md")
+        .await
+        .expect("remove");
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM note_chunks WHERE user_id = $1")
+        .bind(harness.user.id)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("count");
+    assert_eq!(left, 0);
+
+    harness.cleanup().await;
+}
+
+/// An unreachable model must not stop the suggested links being rebuilt from the
+/// vectors already stored.
+///
+/// The regression: `run_once` let `?` out of its loop, so a single passage
+/// nobody could embed — one note written while the endpoint was down, or the
+/// first pass after `TRUNCATE ... CASCADE` — aborted the whole pass before
+/// relinking. Every suggestion the graph already had vanished and stayed gone
+/// until the model came back, even though the vectors for them were all present.
+#[tokio::test]
+async fn suggested_links_are_rebuilt_even_when_the_model_is_unreachable() {
+    use go_notes_server::embed::similarity;
+    use go_notes_server::embed::worker::{run_once, PassState};
+
+    let harness = Harness::new("embedfail").await;
+
+    let long = "This paragraph is long enough to be worth embedding, which means \
+                clearing the minimum length the chunker imposes on a passage.";
+    harness.write("A.md", &format!("# Kitchen\n\n{long}\n")).await;
+    harness.write("B.md", &format!("# Kitchen\n\n{long} Nearly the same.\n")).await;
+    // A third note whose passage is deliberately left without a vector, so the
+    // pass always has something it cannot embed.
+    harness.write("C.md", &format!("# Bread\n\n{long} Different again.\n")).await;
+
+    // Hand-written vectors for A and B only: near-identical, so they should link.
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "SELECT c.body_hash FROM note_chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE c.user_id = $1 AND n.rel_path IN ('A.md', 'B.md')",
+    )
+    .bind(harness.user.id)
+    .fetch_all(&harness.pool)
+    .await
+    .expect("hashes");
+    assert_eq!(hashes.len(), 2);
+
+    for (index, hash) in hashes.iter().enumerate() {
+        let mut vector = vec![1.0f32, 0.02 * index as f32];
+        similarity::normalise(&mut vector);
+        sqlx::query(
+            "INSERT INTO embeddings (user_id, model, body_hash, dims, vector)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(harness.user.id)
+        .bind("test-model")
+        .bind(hash)
+        .bind(vector.len() as i32)
+        .bind(similarity::pack(&vector))
+        .execute(&harness.pool)
+        .await
+        .expect("store embedding");
+    }
+
+    // Port 1 is reserved and nothing listens on it, so every call fails.
+    let mut config = go_notes_server::config::Config::default().embeddings;
+    config.enabled = true;
+    config.api_base = "http://127.0.0.1:1/v1".into();
+    config.model = "test-model".into();
+    config.min_score = 0.5;
+    config.timeout_secs = 2;
+
+    let client = go_notes_server::embed::EmbeddingClient::new(&config)
+        .expect("build client")
+        .expect("client is enabled");
+
+    let mut state = PassState::default();
+    let outcome = run_once(&harness.pool, &client, &config, &mut state).await;
+    assert!(outcome.is_err(), "the pass should still report the model failure");
+
+    let links: i64 = sqlx::query_scalar("SELECT count(*) FROM semantic_links WHERE user_id = $1")
+        .bind(harness.user.id)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("count links");
+    assert!(
+        links > 0,
+        "A and B have usable vectors, so they must still be linked"
+    );
+
+    harness.cleanup().await;
+}
+
 /// Writing a link before its target exists is normal in a linked vault. The link
 /// must be stored as broken and heal by itself once the note appears.
 #[tokio::test]
@@ -320,7 +532,7 @@ async fn the_index_rebuilds_itself_from_the_filesystem() {
     // Wipe every derived table, exactly as the README invites the reader to do.
     harness
         .pool
-        .execute("TRUNCATE notes, folders, tags, attachments CASCADE")
+        .execute("TRUNCATE notes, folders, tags, attachments, note_chunks, embeddings, semantic_links CASCADE")
         .await
         .expect("truncate");
     assert_eq!(harness.note_count().await, 0);

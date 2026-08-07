@@ -17,8 +17,10 @@ import { $inputRule, $node, $prose } from '@milkdown/kit/utils'
 
 import {
   displayText,
+  isRelationLabel,
   remarkWikiLink,
   remarkWikiLinkStringify,
+  splitRelation,
   type WikiLinkNode,
 } from './wikilink-mdast'
 
@@ -58,6 +60,7 @@ export const wikiLinkNode = $node('wikiLink', () => ({
   draggable: false,
   attrs: {
     value: { default: '' },
+    relation: { default: null },
     anchor: { default: null },
     alias: { default: null },
     embed: { default: false },
@@ -69,6 +72,7 @@ export const wikiLinkNode = $node('wikiLink', () => ({
         const el = dom as HTMLElement
         return {
           value: el.getAttribute('data-wikilink') ?? '',
+          relation: el.getAttribute('data-relation') || null,
           anchor: el.getAttribute('data-anchor'),
           alias: el.getAttribute('data-alias'),
           embed: el.getAttribute('data-embed') === 'true',
@@ -77,8 +81,9 @@ export const wikiLinkNode = $node('wikiLink', () => ({
     },
   ],
   toDOM: (node) => {
-    const { value, anchor, alias, embed } = node.attrs as {
+    const { value, relation, anchor, alias, embed } = node.attrs as {
       value: string
+      relation: string | null
       anchor: string | null
       alias: string | null
       embed: boolean
@@ -89,13 +94,22 @@ export const wikiLinkNode = $node('wikiLink', () => ({
       'span',
       {
         'data-wikilink': value,
+        'data-relation': relation ?? '',
         'data-anchor': anchor ?? '',
         'data-alias': alias ?? '',
         'data-embed': String(embed),
         // Styled red when the target does not exist, matching Obsidian, so a
         // typo in a link is visible immediately rather than at read time.
-        class: `gn-wikilink${resolved ? '' : ' gn-wikilink-unresolved'}`,
-        title: resolved ? value : `${value} — this note does not exist yet`,
+        class: `gn-wikilink${resolved ? '' : ' gn-wikilink-unresolved'}${
+          relation ? ' gn-wikilink-typed' : ''
+        }`,
+        // The relation is not shown inline — it would clutter the sentence the
+        // link sits in — so the tooltip is where it is readable without opening
+        // the source.
+        title: [
+          relation ? `${relation}: ${value}` : value,
+          resolved ? '' : ' — this note does not exist yet',
+        ].join(''),
       },
       displayText({ value, alias }),
     ]
@@ -106,6 +120,7 @@ export const wikiLinkNode = $node('wikiLink', () => ({
       const link = node as unknown as WikiLinkNode
       state.addNode(type, {
         value: link.value,
+        relation: link.relation,
         anchor: link.anchor,
         alias: link.alias,
         embed: link.embed,
@@ -117,6 +132,7 @@ export const wikiLinkNode = $node('wikiLink', () => ({
     runner: (state, node) => {
       state.addNode('wikiLink', undefined, undefined, {
         value: node.attrs.value,
+        relation: node.attrs.relation,
         anchor: node.attrs.anchor,
         alias: node.attrs.alias,
         embed: node.attrs.embed,
@@ -150,8 +166,11 @@ export const wikiLinkInputRule = $inputRule((ctx) =>
   new InputRule(
     /(?:!?)\[\[([^\[\]\n|#]+)(?:#([^\[\]\n|]*))?(?:\|([^\[\]\n]*))?\]\]$/,
     (state, match, start, end) => {
-      const [whole, target, anchor, alias] = match
-      if (!target || !target.trim()) return null
+      const [whole, captured, anchor, alias] = match
+      if (!captured || !captured.trim()) return null
+
+      const { relation, target } = splitRelation(captured)
+      if (!target.trim()) return null
 
       const type = wikiLinkNode.type(ctx)
       return state.tr.replaceWith(
@@ -159,6 +178,7 @@ export const wikiLinkInputRule = $inputRule((ctx) =>
         end,
         type.create({
           value: target.trim(),
+          relation,
           anchor: anchor?.trim() || null,
           alias: alias?.trim() || null,
           embed: whole.startsWith('!'),
@@ -212,6 +232,10 @@ export const wikiLinkAutocomplete = $prose(() => {
   let items: Array<{ path: string; title: string; exists: boolean }> = []
   let selected = 0
   let queryFrom = -1
+  // The relation typed before `::`, carried from the query to the node the
+  // selection inserts. Held here rather than re-derived at insert time because
+  // by then the text has been replaced.
+  let queryRelation: string | null = null
   let latestQuery = 0
   // The last query text a request was actually sent for, so an update that
   // re-runs without the text changing — a selection move, a re-render — does
@@ -225,6 +249,7 @@ export const wikiLinkAutocomplete = $prose(() => {
     items = []
     selected = 0
     queryFrom = -1
+    queryRelation = null
     lastQuerySent = null
     if (debounceTimer !== undefined) {
       clearTimeout(debounceTimer)
@@ -253,7 +278,13 @@ export const wikiLinkAutocomplete = $prose(() => {
     const tr = view.state.tr.replaceWith(
       queryFrom,
       view.state.selection.from,
-      type.create({ value: target, anchor: null, alias: null, embed: false })
+      type.create({
+        value: target,
+        relation: queryRelation,
+        anchor: null,
+        alias: null,
+        embed: false,
+      })
     )
     view.dispatch(tr)
     close()
@@ -361,17 +392,26 @@ export const wikiLinkAutocomplete = $prose(() => {
           close()
           return
         }
-        const query = text.slice(open + 2)
+        const typed = text.slice(open + 2)
         // A closing bracket, a further `[`, or a leaf in the way means this `[[`
         // is not an open query we should be completing.
         if (
-          query.includes(']]') ||
-          query.includes('[') ||
-          query.includes(LEAF_PLACEHOLDER)
+          typed.includes(']]') ||
+          typed.includes('[') ||
+          typed.includes(LEAF_PLACEHOLDER)
         ) {
           close()
           return
         }
+
+        // `[[contradicts::Kit` is a search for "Kit", not for the whole string.
+        // Searching the whole thing would return nothing the moment somebody
+        // started typing a relation, which reads as the autocomplete breaking.
+        const separator = typed.indexOf('::')
+        const label = separator >= 0 ? typed.slice(0, separator).trim() : ''
+        const relationTyped = separator >= 0 && isRelationLabel(label)
+        queryRelation = relationTyped ? label : null
+        const query = relationTyped ? typed.slice(separator + 2) : typed
 
         // `$from.start()` is the document position of the block's first
         // character, so offsets within the block convert by simple addition.

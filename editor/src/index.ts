@@ -19,6 +19,7 @@ import { listener } from '@milkdown/kit/plugin/listener'
 import { TextSelection } from '@milkdown/kit/prose/state'
 
 import { linkPlugins, linkSlashItem } from './link'
+import { renderMermaidPreview } from './mermaid'
 import { createSourceEditor, type SourceEditor } from './source-mode'
 import { setWikiLinkHooks, wikiLinkPlugins } from './wikilink'
 import { normalizeTarget } from './wikilink-mdast'
@@ -119,6 +120,15 @@ async function buildWysiwyg(handle: Handle) {
       },
       [Crepe.Feature.BlockEdit]: {
         buildMenu: (builder) => builder.getGroup('advanced').addItem('link', linkSlashItem),
+      },
+      [Crepe.Feature.CodeMirror]: {
+        renderPreview: renderMermaidPreview,
+        // Global to every code block, but only mermaid ever produces a preview,
+        // so in practice this is "a diagram opens as a diagram, not as source".
+        // `theme.css` keeps the source visible while the block has focus, so
+        // this cannot collapse the editor out from under someone typing.
+        previewOnlyByDefault: true,
+        previewLabel: 'Diagram',
       },
     },
   })

@@ -42,6 +42,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Deliberately not `embeddings`. The first start of that container
+      # downloads a few hundred megabytes of weights, and nothing about notes,
+      # search or the graph depends on it — go-notes should be usable while it
+      # is still unpacking, and stay usable if it never comes up at all.
     networks: [go-notes]
 
   go-notes:
@@ -63,6 +67,24 @@ services:
       # Password login stays available as a way back in if Authelia is down.
       # Set it to "false" if you would rather have exactly one route in.
       GO_NOTES__AUTH__LOCAL__ENABLED: "true"
+
+      # Suggested links: notes that are *about* the same thing without linking
+      # to each other, drawn as dashed edges in the graph. Served by the
+      # `embeddings` container below, so nothing leaves this host — point
+      # API_BASE at a hosted provider instead and the text of your notes is
+      # sent to it, which is a different decision and worth making on purpose.
+      #
+      # Set EMBEDDINGS_ENABLED=false in .env to turn the feature off; the
+      # container can then be stopped, and everything else works exactly as it
+      # did before.
+      GO_NOTES__EMBEDDINGS__ENABLED: ${EMBEDDINGS_ENABLED:-true}
+      GO_NOTES__EMBEDDINGS__API_BASE: ${EMBEDDINGS_API_BASE:-http://embeddings:80/v1}
+      GO_NOTES__EMBEDDINGS__API_KEY: ${EMBEDDINGS_API_KEY:-}
+      GO_NOTES__EMBEDDINGS__MODEL: ${EMBEDDINGS_MODEL:-BAAI/bge-base-en-v1.5}
+      # How alike two passages must be before the graph suggests a connection.
+      # Worth tuning to your own notes — see the README; BGE's scores sit high,
+      # so too low a value connects everything to everything.
+      GO_NOTES__EMBEDDINGS__MIN_SCORE: ${EMBEDDINGS_MIN_SCORE:-0.82}
 
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
@@ -113,8 +135,40 @@ services:
       start_period: 20s
     networks: [go-notes]
 
+  # The embeddings model behind "suggested links", served over the same
+  # OpenAI-compatible API go-notes speaks to a hosted provider.
+  #
+  # BGE-base-en-v1.5 is a 768-dimension English embedding model, small enough
+  # to run on a CPU — a few hundred milliseconds per batch on a laptop, which
+  # is fine for work that happens in the background and never on a request.
+  # Swap `--model-id` for `BAAI/bge-m3` if your notes are not in English, or
+  # `BAAI/bge-small-en-v1.5` if this container is competing for a very small machine.
+  #
+  # This publishes no ports: it is reachable only from go-notes on the internal
+  # network, so the text of your notes never leaves the host.
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.3
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-base-en-v1.5", "--auto-truncate"]
+    environment:
+      # Where the weights are cached. The first start downloads roughly 440 MB
+      # from huggingface.co and then never needs the internet again; the volume
+      # below is what makes that true across restarts. On a machine with no
+      # route out, seed this volume from one that has.
+      HF_HOME: /data
+    volumes:
+      - embeddings:/data
+    # No healthcheck on purpose. Nothing depends on this container — go-notes
+    # neither waits for it nor needs it — and the image carries no shell and no
+    # curl, so any check would be a guess at an internal binary name that shows
+    # the container as permanently unhealthy when the guess is wrong. Whether it
+    # is working is visible where it matters: `podman logs go-notes-embeddings`,
+    # and suggested links appearing in the graph.
+    networks: [go-notes]
+
 volumes:
   pgdata:
+  embeddings:
   caddy_data:
   caddy_config:
 

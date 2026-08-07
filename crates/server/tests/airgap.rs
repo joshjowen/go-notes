@@ -206,3 +206,61 @@ fn the_built_editor_bundle_has_no_remote_imports() {
         "the editor bundle fetches from another origin: {external:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The server's own outbound connections
+// ---------------------------------------------------------------------------
+//
+// Everything above is about what the *browser* fetches. Nothing was ever checked
+// about what the server itself dials, which was fine while the only outbound
+// call was OIDC — something you have to configure an issuer URL to get. The
+// embeddings client is the second, and it is the first that could plausibly be
+// left on by accident, so it gets a check of its own.
+
+/// With embeddings disabled, no HTTP client is constructed at all.
+///
+/// Not "no request is made" — *no client exists*, which is a stronger and much
+/// cheaper thing to assert. `EmbeddingClient::new` returning `None` is the only
+/// path by which the worker is never spawned, so this is the single point where
+/// "off" is decided.
+#[test]
+fn the_embedding_client_is_not_built_when_it_is_disabled() {
+    let config = go_notes_server::config::Config::default();
+    assert!(
+        !config.embeddings.enabled,
+        "embeddings must be off unless somebody turns them on"
+    );
+
+    let client = go_notes_server::embed::EmbeddingClient::new(&config.embeddings)
+        .expect("building a disabled client cannot fail");
+    assert!(
+        client.is_none(),
+        "a disabled embeddings config must produce no client"
+    );
+}
+
+/// The other half, in the same spirit as `the_detector_catches_the_things_it_is
+/// _looking_for`: prove the check above can fail, so that it passing means
+/// something. A configuration that *is* enabled must produce a client.
+#[test]
+fn the_check_above_would_notice_a_client_being_built() {
+    let mut config = go_notes_server::config::Config::default();
+    config.embeddings.enabled = true;
+    config.embeddings.api_base = "http://localhost:11434/v1".into();
+    config.embeddings.model = "nomic-embed-text".into();
+
+    let client = go_notes_server::embed::EmbeddingClient::new(&config.embeddings)
+        .expect("building an enabled client");
+    assert!(client.is_some());
+}
+
+/// Nothing in the shipped configuration points anywhere. A default that named a
+/// host would mean an air-gapped deployment reaching for it the moment somebody
+/// flipped `enabled`, having been told only that it turns a feature on.
+#[test]
+fn the_default_configuration_names_no_embeddings_host() {
+    let config = go_notes_server::config::Config::default();
+    assert_eq!(config.embeddings.api_base, "");
+    assert_eq!(config.embeddings.model, "");
+    assert!(config.embeddings.api_key.is_empty());
+}

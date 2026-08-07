@@ -102,6 +102,7 @@ pub async fn index_note_content(
 
     replace_links(&mut tx, user.id, note_id, &parsed.links).await?;
     replace_tags(&mut tx, user.id, note_id, &parsed.tags).await?;
+    replace_chunks(&mut tx, user.id, note_id, &file.markdown).await?;
 
     tx.commit().await?;
 
@@ -168,6 +169,7 @@ async fn replace_links(
     let mut kinds = Vec::with_capacity(links.len());
     let mut ordinals = Vec::with_capacity(links.len());
     let mut contexts = Vec::with_capacity(links.len());
+    let mut relations = Vec::with_capacity(links.len());
 
     for (ordinal, link) in links.iter().enumerate() {
         target_raw.push(link.target_raw.clone());
@@ -177,15 +179,17 @@ async fn replace_links(
         kinds.push(link.kind.as_str().to_string());
         ordinals.push(ordinal as i32);
         contexts.push(link.context.clone());
+        relations.push(link.relation.clone());
     }
 
     sqlx::query(
         "INSERT INTO links (user_id, source_note_id, target_raw, target_key,
-                            anchor, alias, link_kind, ordinal, context)
-         SELECT $1, $2, t.raw, t.key, t.anchor, t.alias, t.kind, t.ordinal, t.context
+                            anchor, alias, link_kind, ordinal, context, relation)
+         SELECT $1, $2, t.raw, t.key, t.anchor, t.alias, t.kind, t.ordinal,
+                t.context, t.relation
          FROM unnest($3::text[], $4::text[], $5::text[], $6::text[],
-                     $7::text[], $8::int[], $9::text[])
-              AS t(raw, key, anchor, alias, kind, ordinal, context)",
+                     $7::text[], $8::int[], $9::text[], $10::text[])
+              AS t(raw, key, anchor, alias, kind, ordinal, context, relation)",
     )
     .bind(user_id)
     .bind(note_id)
@@ -196,6 +200,71 @@ async fn replace_links(
     .bind(&kinds)
     .bind(&ordinals)
     .bind(&contexts)
+    .bind(&relations)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
+}
+
+/// Splits the note into passages and stores them for the embedding worker.
+///
+/// In the same transaction as the links and the tags, and synchronous, because
+/// this is only text handling — no network is involved here and none may be. The
+/// model is reached from the background worker, never from a request. That is
+/// what stops a slow endpoint from making a save slow, and it is what makes a
+/// save replayed from an offline queue behave exactly like any other save: it
+/// arrives through the same handler, so the passages are written the same way
+/// and the worker picks them up on its next pass. There is deliberately no
+/// offline-specific path, because a second way in is a second thing to get wrong.
+///
+/// Passages are always rewritten in full rather than diffed. The rows are cheap,
+/// and the *embeddings* are keyed by content hash anyway — so rewriting a row
+/// that says the same thing costs nothing at the model, while diffing would let a
+/// note whose paragraphs were reordered leave a stale passage behind.
+async fn replace_chunks(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    note_id: Uuid,
+    markdown: &str,
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM note_chunks WHERE note_id = $1")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
+
+    let chunks = crate::chunk::chunks(markdown, crate::chunk::DEFAULT_CHUNK_CHARS);
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    let mut ordinals = Vec::with_capacity(chunks.len());
+    let mut headings = Vec::with_capacity(chunks.len());
+    let mut bodies = Vec::with_capacity(chunks.len());
+    let mut hashes = Vec::with_capacity(chunks.len());
+
+    for chunk in &chunks {
+        ordinals.push(chunk.ordinal);
+        headings.push(chunk.heading.clone());
+        bodies.push(chunk.body.clone());
+        // Hashed over exactly what the model will be sent, heading path included:
+        // a paragraph moved under a different heading means something else there,
+        // and should be embedded again rather than hit the cache.
+        hashes.push(blake3::hash(chunk.embedding_text().as_bytes()).to_hex().to_string());
+    }
+
+    sqlx::query(
+        "INSERT INTO note_chunks (user_id, note_id, ordinal, heading, body, body_hash)
+         SELECT $1, $2, t.ordinal, t.heading, t.body, t.hash
+         FROM unnest($3::int[], $4::text[], $5::text[], $6::text[])
+              AS t(ordinal, heading, body, hash)",
+    )
+    .bind(user_id)
+    .bind(note_id)
+    .bind(&ordinals)
+    .bind(&headings)
+    .bind(&bodies)
+    .bind(&hashes)
     .execute(&mut **tx)
     .await?;
 
@@ -675,7 +744,16 @@ pub fn rewrite_link_targets(
                     .as_ref()
                     .map(|a| format!("|{a}"))
                     .unwrap_or_default();
-                format!("{prefix}[[{new_target}{anchor}{alias}]]")
+                // The relation is the author's word for the relationship, not
+                // part of the address, so a move must carry it across untouched.
+                // Dropping it here would quietly delete the only thing that made
+                // the link say more than "these two are connected".
+                let relation = link
+                    .relation
+                    .as_ref()
+                    .map(|r| format!("{r}::"))
+                    .unwrap_or_default();
+                format!("{prefix}[[{relation}{new_target}{anchor}{alias}]]")
             }
             // A `[text](target.md)` link: rewrite only the target, leaving the
             // visible text exactly as the author wrote it.
@@ -802,6 +880,36 @@ mod tests {
             "New Name.md",
         );
         assert_eq!(out.unwrap(), "See [[New Name]] for details.\n");
+    }
+
+    /// A relation is the author's word for the relationship, not part of the
+    /// address. Rewriting the address must not take it with it — losing it here
+    /// would silently downgrade a typed link to a plain one, in a file edit the
+    /// author never made and would only notice in the graph much later.
+    #[test]
+    fn preserves_the_relation_on_a_typed_link() {
+        let out = rewrite_link_targets(
+            "This [[contradicts::Old]] and ![[illustrates::Old]].\n",
+            &keys("Old.md"),
+            "Old.md",
+            "New.md",
+        );
+        assert_eq!(
+            out.unwrap(),
+            "This [[contradicts::New]] and ![[illustrates::New]].\n"
+        );
+    }
+
+    #[test]
+    fn preserves_a_relation_alongside_an_anchor_and_an_alias() {
+        let out = rewrite_link_targets(
+            "See [[supersedes::Old#Budget|the numbers]].\n",
+            &keys("Old.md"),
+            "Old.md",
+            "Projects/New.md",
+        );
+        // The author wrote a bare filename, so they keep a bare filename.
+        assert_eq!(out.unwrap(), "See [[supersedes::New#Budget|the numbers]].\n");
     }
 
     /// The detail that makes a rename invisible to the reader: everything the

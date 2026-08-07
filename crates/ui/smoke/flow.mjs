@@ -133,6 +133,43 @@ if (dialog > 0) {
     copies.join(','));
 }
 
+// --- rendering: lists and mermaid ---------------------------------------------
+// Neither of these can be checked anywhere else. The list DOM belongs to a Crepe
+// node view, so the only proof that a bullet lines up with its text is measuring
+// the two boxes; and mermaid draws through a layout engine into an SVG, under
+// this project's real Content-Security-Policy, on a plain-HTTP origin — the
+// exact combination that has broken start-up here twice before.
+await page.click('.gn-narrow-only');
+await page.waitForTimeout(400);
+await page.click('.gn-tree-name:has-text("Diagram")');
+await page.waitForSelector('.gn-editor-host .ProseMirror', { timeout: 10000 });
+await page.waitForTimeout(1500);
+
+const bulletOffset = await page.evaluate(() => {
+  const item = document.querySelector('.milkdown-list-item-block');
+  if (!item) return null;
+  const centre = (el) => { const b = el.getBoundingClientRect(); return b.top + b.height / 2; };
+  return centre(item.querySelector('.label-wrapper')) - centre(item.querySelector('.content-dom p'));
+});
+check('the bullet is centred on the line of text beside it',
+  bulletOffset !== null && Math.abs(bulletOffset) <= 2, `${bulletOffset}px off`);
+
+// One line of text, one line box: an item taller than that is the double-spacing
+// the inner paragraph's margins used to add.
+const itemHeight = await page.evaluate(() => {
+  const item = document.querySelector('.milkdown-list-item-block li.list-item');
+  return item ? item.getBoundingClientRect().height : null;
+});
+check('a one-line list item is one line tall',
+  itemHeight !== null && itemHeight <= 24, `${itemHeight}px`);
+
+const diagram = page.locator('.milkdown-code-block .preview svg');
+await diagram.first().waitFor({ timeout: 15000 }).catch(() => {});
+check('a mermaid block renders as a diagram', (await diagram.count()) > 0);
+check('the diagram opens without its source',
+  (await page.locator('.milkdown-code-block .codemirror-host.hidden').count()) > 0);
+await shot('diagram');
+
 check('no uncaught exceptions anywhere', errors.length === 0, errors.join(' | '));
 
 console.log(steps.map((s) => `${s.ok ? 'PASS' : 'FAIL'}  ${s.name}${s.detail ? '  [' + s.detail + ']' : ''}`).join('\n'));

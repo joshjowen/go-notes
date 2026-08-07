@@ -39,6 +39,14 @@ enum Command {
     Check,
     /// Rebuild the index from the filesystem.
     Reindex,
+    /// Embed any passages that have no vector yet, then recompute the semantic
+    /// links between notes. Does nothing unless `[embeddings]` is enabled.
+    Embed {
+        /// Discard existing vectors and embed everything again. Only needed
+        /// after changing the model, and it costs a full pass at the endpoint.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -84,6 +92,7 @@ async fn main() -> Result<()> {
         Command::User(command) => user_command(&config, command),
         Command::Check => reindex(config, true).await,
         Command::Reindex => reindex(config, false).await,
+        Command::Embed { all } => embed_command(config, all).await,
     }
 }
 
@@ -156,6 +165,7 @@ async fn serve(config: Config) -> Result<()> {
         local_users,
         oidc,
         throttle: Arc::new(LoginThrottle::new()),
+        semantic_links: config.embeddings.enabled,
     };
 
     // Reconciliation runs in the background so a large vault does not delay the
@@ -180,6 +190,23 @@ async fn serve(config: Config) -> Result<()> {
     };
 
     spawn_session_cleanup(pool.clone());
+
+    // Built here and spawned, never awaited before the listener binds: unlike
+    // OIDC discovery, nothing about the application depends on this working, and
+    // a model that is slow to answer must not be able to delay start-up. If the
+    // endpoint is wrong the worker logs, backs off, and everything else carries
+    // on with the semantic edges simply absent.
+    match go_notes_server::embed::EmbeddingClient::new(&config.embeddings) {
+        Ok(Some(client)) => {
+            tracing::info!(model = %client.model(), "semantic links enabled");
+            go_notes_server::embed::worker::spawn(pool.clone(), client, config.embeddings.clone());
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::error!(error = ?err, "could not build the embeddings client; \
+                                           semantic links are off for this run");
+        }
+    }
 
     let app = routes::build(state);
     let addr: SocketAddr = config
@@ -285,6 +312,52 @@ async fn healthcheck(config: &Config) -> Result<()> {
 ///
 /// This is the operational expression of "the files are the source of truth":
 /// if the database is ever wrong, this is always the way to fix it.
+/// One embedding pass, run to completion, with a report.
+///
+/// The same work the background worker does on its timer — this is for a first
+/// run over an existing vault, where waiting for the interval to chew through it
+/// is not what anybody wants to do.
+async fn embed_command(config: Config, all: bool) -> Result<()> {
+    let Some(client) = go_notes_server::embed::EmbeddingClient::new(&config.embeddings)? else {
+        println!(
+            "Embeddings are not enabled. Set embeddings.enabled, embeddings.api_base and \n\
+             embeddings.model to point at an OpenAI-compatible endpoint."
+        );
+        return Ok(());
+    };
+
+    let pool = db::connect(&config.database).await?;
+    db::migrate(&pool).await?;
+
+    if all {
+        // Only this model's rows: another model's vectors are not wrong, they
+        // are simply for a different question, and throwing them away would
+        // make switching back expensive for no reason.
+        let cleared = sqlx::query("DELETE FROM embeddings WHERE model = $1")
+            .bind(client.model())
+            .execute(&pool)
+            .await?
+            .rows_affected();
+        println!("Discarded {cleared} existing embeddings for {}.", client.model());
+    }
+
+    // A fresh `PassState`, so this always recomputes the links rather than
+    // deciding nothing changed — somebody running the command by hand is asking
+    // for exactly that.
+    let mut state = go_notes_server::embed::worker::PassState::default();
+    let report =
+        go_notes_server::embed::worker::run_once(&pool, &client, &config.embeddings, &mut state)
+            .await?;
+    println!(
+        "Embedded {} passages and wrote {} semantic links.",
+        report.embedded, report.notes_relinked
+    );
+    if report.embedded == 0 {
+        println!("Everything was already embedded.");
+    }
+    Ok(())
+}
+
 async fn reindex(config: Config, dry_run: bool) -> Result<()> {
     let pool = db::connect(&config.database).await?;
     db::migrate(&pool).await?;

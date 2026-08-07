@@ -40,8 +40,14 @@ impl LinkKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedLink {
-    /// Target exactly as written, minus any `#anchor` or `|alias`.
+    /// Target exactly as written, minus any `relation::`, `#anchor` or `|alias`.
     pub target_raw: String,
+    /// The author's word for the relationship, from `[[relation::Note]]`.
+    ///
+    /// Only wikilinks can carry one: an inline `[text](note.md)` has nowhere to
+    /// put it that would not also change what the link says when read as plain
+    /// markdown by something else.
+    pub relation: Option<String>,
     pub anchor: Option<String>,
     pub alias: Option<String>,
     pub kind: LinkKind,
@@ -125,7 +131,7 @@ impl CodeMask {
     }
 }
 
-fn markdown_options() -> Options {
+pub(crate) fn markdown_options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -226,6 +232,9 @@ fn internal_markdown_link(
     }
     Some(ParsedLink {
         target_raw: target.to_string(),
+        // An inline markdown link has nowhere to put a relation that would not
+        // also change what it says to a reader who is not using this editor.
+        relation: None,
         anchor: anchor.map(str::to_string),
         alias: None,
         kind,
@@ -344,12 +353,17 @@ fn parse_wikilink(
     span: Range<usize>,
     source: &str,
 ) -> Option<ParsedLink> {
-    // `[[target#anchor|alias]]` — the alias runs to the end, so split it first.
+    // `[[relation::target#anchor|alias]]`, unpicked in that order for a reason
+    // each time. The alias runs to the end of the link, so it comes off first.
+    // The anchor is next because a relation may not contain `#`, so by the time
+    // the relation is split the `#` is already gone and cannot be mistaken for
+    // part of a label.
     let (target_and_anchor, alias) = match inner.split_once('|') {
         Some((before, after)) => (before, Some(after.trim())),
         None => (inner, None),
     };
-    let (target, anchor) = split_anchor(target_and_anchor);
+    let (target_and_relation, anchor) = split_anchor(target_and_anchor);
+    let (relation, target) = go_notes_shared::links::split_relation(target_and_relation);
     let target = target.trim();
 
     if target.is_empty() {
@@ -358,6 +372,7 @@ fn parse_wikilink(
 
     Some(ParsedLink {
         target_raw: target.to_string(),
+        relation: relation.map(str::to_string),
         anchor: anchor.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
         alias: alias.map(str::to_string).filter(|a| !a.is_empty()),
         kind,
@@ -476,6 +491,14 @@ fn frontmatter_tags(frontmatter: &Value) -> Vec<String> {
     }
     out.retain(|t| !t.is_empty());
     out
+}
+
+/// Just the body of a note, with any frontmatter block removed.
+///
+/// Exposed for the chunker, which needs the same notion of "where the prose
+/// starts" this module already has — a second one would drift.
+pub fn body_without_frontmatter(content: &str) -> &str {
+    split_frontmatter(content).1
 }
 
 /// Parses a note. `stem` is the filename without its extension, used as the
@@ -738,5 +761,75 @@ mod tests {
         assert!(note.links.is_empty());
         assert!(note.tags.is_empty());
         assert_eq!(note.body_text, "");
+    }
+
+    // ---------------------------------------------------------------- typed links
+
+    #[test]
+    fn a_typed_wikilink_keeps_its_relation_and_loses_it_from_the_target() {
+        let note = parse("n", "This [[contradicts::Kitchen Reno]] entirely.\n");
+        assert_eq!(targets(&note), vec!["Kitchen Reno"]);
+        assert_eq!(note.links[0].relation.as_deref(), Some("contradicts"));
+        // The relation must not leak into the key, or the link resolves to a
+        // note nobody has: `contradicts::kitchen reno`.
+        assert_eq!(note.links[0].target_key(), "kitchen reno");
+    }
+
+    #[test]
+    fn an_ordinary_wikilink_has_no_relation() {
+        let note = parse("n", "See [[Kitchen Reno]].\n");
+        assert_eq!(note.links[0].relation, None);
+    }
+
+    /// The order the three separators come off in, exercised all at once —
+    /// getting it wrong puts the anchor inside the relation or the relation
+    /// inside the alias, and both read as a working link right up until it
+    /// resolves to nothing.
+    #[test]
+    fn a_relation_survives_alongside_an_anchor_and_an_alias() {
+        let note = parse("n", "[[supersedes::Projects/Budget#Q3|last year's]] plan\n");
+        let link = &note.links[0];
+        assert_eq!(link.target_raw, "Projects/Budget");
+        assert_eq!(link.relation.as_deref(), Some("supersedes"));
+        assert_eq!(link.anchor.as_deref(), Some("Q3"));
+        assert_eq!(link.alias.as_deref(), Some("last year's"));
+    }
+
+    #[test]
+    fn an_embed_can_be_typed_too() {
+        let note = parse("n", "![[illustrates::Diagram]]\n");
+        assert_eq!(note.links[0].kind, LinkKind::Embed);
+        assert_eq!(note.links[0].relation.as_deref(), Some("illustrates"));
+    }
+
+    /// The guard, seen from the parser rather than from `shared::links`: a note
+    /// that already contained a colon pair in a target must mean what it meant
+    /// before typed links existed.
+    #[test]
+    fn a_target_that_merely_contains_colons_is_left_alone() {
+        let note = parse("n", "See [[C++::Notes]].\n");
+        assert_eq!(targets(&note), vec!["C++::Notes"]);
+        assert_eq!(note.links[0].relation, None);
+    }
+
+    #[test]
+    fn a_typed_link_inside_code_is_still_not_a_link() {
+        let note = parse("n", "Write `[[relates::Note]]` or:\n\n```\n[[cites::Other]]\n```\n");
+        assert!(note.links.is_empty());
+    }
+
+    /// An inline markdown link has nowhere to put a relation, and does not get
+    /// one by accident either: `relation::` in that position reads as a URI
+    /// scheme, so `is_external` has already dropped the link before any of this
+    /// runs. Both halves are asserted because the second is what makes the
+    /// first safe.
+    #[test]
+    fn inline_markdown_links_never_carry_a_relation() {
+        let note = parse("n", "[text](Other.md)\n");
+        assert_eq!(note.links[0].relation, None);
+        assert_eq!(note.links[0].target_raw, "Other.md");
+
+        let scheme_shaped = parse("n", "[text](cites::Other.md)\n");
+        assert!(scheme_shaped.links.is_empty());
     }
 }

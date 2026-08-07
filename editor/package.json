@@ -16,7 +16,8 @@
     "@codemirror/view": "^6.36.4",
     "@milkdown/crepe": "^7.15.0",
     "@milkdown/kit": "^7.15.0",
-    "@milkdown/prose": "^7.15.0"
+    "@milkdown/prose": "^7.15.0",
+    "mermaid": "^11.16.1"
   },
   "devDependencies": {
     "mdast": "^2.3.2",

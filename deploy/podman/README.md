@@ -33,6 +33,13 @@ podman build -t go-notes:latest .
 systemctl --user daemon-reload
 systemctl --user start go-notes.service
 
+#    The embeddings model is a separate unit, because nothing else depends on
+#    it. Its first start downloads roughly 440 MB of weights into a named
+#    volume, so give it a few minutes; go-notes is usable throughout.
+#    Skip this entirely if you do not want suggested links — then set
+#    GO_NOTES__EMBEDDINGS__ENABLED=false in go-notes.container.
+systemctl --user start go-notes-embeddings.service
+
 # 5. Keep it running when you are not logged in. Without this, systemd stops
 #    your user's services the moment your last session ends — which would stop
 #    the notes server every time you log out of SSH.
