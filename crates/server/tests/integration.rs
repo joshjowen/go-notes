@@ -421,6 +421,81 @@ async fn suggested_links_are_rebuilt_even_when_the_model_is_unreachable() {
     harness.cleanup().await;
 }
 
+/// A mutual match is discovered once from each note's side — `best_neighbours`
+/// runs per note in the vault — and the primary key on `(source_note_id,
+/// target_note_id)` does not consider the two directions duplicates. Before
+/// `relink_user` canonicalised on note id, a vault with exactly one related
+/// pair stored two rows for it, and `suggested_for` — which unions "I'm the
+/// source" with "I'm the target" on the assumption that a pair is one row —
+/// showed the same neighbour twice.
+#[tokio::test]
+async fn a_mutual_match_produces_one_semantic_link_not_two() {
+    use go_notes_server::embed::similarity;
+    use go_notes_server::embed::worker::{run_once, PassState};
+
+    let harness = Harness::new("mutual").await;
+
+    let long = "This paragraph is long enough to be worth embedding, which means \
+                clearing the minimum length the chunker imposes on a passage.";
+    harness.write("A.md", &format!("# Kitchen\n\n{long}\n")).await;
+    harness.write("B.md", &format!("# Kitchen\n\n{long} Nearly the same.\n")).await;
+
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "SELECT c.body_hash FROM note_chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE c.user_id = $1 AND n.rel_path IN ('A.md', 'B.md')",
+    )
+    .bind(harness.user.id)
+    .fetch_all(&harness.pool)
+    .await
+    .expect("hashes");
+    assert_eq!(hashes.len(), 2);
+
+    for hash in &hashes {
+        let mut vector = vec![1.0f32, 0.0f32];
+        similarity::normalise(&mut vector);
+        sqlx::query(
+            "INSERT INTO embeddings (user_id, model, body_hash, dims, vector)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(harness.user.id)
+        .bind("test-model")
+        .bind(hash)
+        .bind(vector.len() as i32)
+        .bind(similarity::pack(&vector))
+        .execute(&harness.pool)
+        .await
+        .expect("store embedding");
+    }
+
+    // Nothing is missing an embedding, so the pass never has to reach the
+    // model — the endpoint just has to be configured, not reachable.
+    let mut config = go_notes_server::config::Config::default().embeddings;
+    config.enabled = true;
+    config.api_base = "http://127.0.0.1:1/v1".into();
+    config.model = "test-model".into();
+    config.min_score = 0.5;
+    config.timeout_secs = 2;
+
+    let client = go_notes_server::embed::EmbeddingClient::new(&config)
+        .expect("build client")
+        .expect("client is enabled");
+
+    let mut state = PassState::default();
+    run_once(&harness.pool, &client, &config, &mut state)
+        .await
+        .expect("nothing needs the model, so the pass should not fail");
+
+    let links: i64 = sqlx::query_scalar("SELECT count(*) FROM semantic_links WHERE user_id = $1")
+        .bind(harness.user.id)
+        .fetch_one(&harness.pool)
+        .await
+        .expect("count links");
+    assert_eq!(links, 1, "A and B are one relationship, not two directed rows");
+
+    harness.cleanup().await;
+}
+
 /// Writing a link before its target exists is normal in a linked vault. The link
 /// must be stored as broken and heal by itself once the note appears.
 #[tokio::test]

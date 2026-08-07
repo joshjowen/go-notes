@@ -203,7 +203,21 @@ impl Default for Config {
                 // Chosen high on purpose. A threshold that is too low fills the
                 // graph with edges between notes that merely share a register,
                 // and a graph that claims everything is related says nothing.
-                min_score: 0.78,
+                //
+                // Measured against BGE-small-en-v1.5 (the example deployments'
+                // shipped model), embedding "{heading}\n\n{body}" exactly as
+                // `embed_missing` does: genuinely related note pairs scored
+                // 0.74-0.78, unrelated topics scored up to 0.62. The heading
+                // matters here — two related notes almost always have
+                // differently-worded headings, which measurably drags a true
+                // match's score down (0.815 for one real pair on body text
+                // alone, 0.742 once its heading was included) — so a number
+                // tuned against bare passages would sit too high and miss real
+                // matches. 0.70 sits in the gap with margin either side. A
+                // different model, or a vault of much shorter or longer notes
+                // than this was measured on, shifts the band; re-measure rather
+                // than assume.
+                min_score: 0.70,
             },
             uploads: UploadConfig {
                 max_bytes: 25 * 1024 * 1024,

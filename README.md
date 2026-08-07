@@ -50,11 +50,13 @@ Open <http://localhost:8080>. `docker compose` works identically.
 Your notes appear as markdown in `deploy/data/notes/josh/`; set `NOTES_DIR` in
 `deploy/.env` to put the vault somewhere you have chosen.
 
-Three containers start: the app, Postgres, and a BGE-base-en-v1.5 model that
-provides the suggested links. That last one downloads roughly 440 MB of weights
-the first time and caches them in a volume — nothing waits for it, so the app is
-usable immediately. Set `EMBEDDINGS_ENABLED=false` in `deploy/.env` to do
-without it.
+Three containers start: the app, Postgres, and a BGE-small-en-v1.5 model that
+provides the suggested links — sized for a CPU-only, NUC-class host rather than
+a workstation; see the comment beside the `embeddings` service in
+`deploy/docker-compose.yml` for what that trade-off costs against BGE-base.
+That last one downloads roughly 130 MB of weights the first time and caches
+them in a volume — nothing waits for it, so the app is usable immediately. Set
+`EMBEDDINGS_ENABLED=false` in `deploy/.env` to do without it.
 
 ## Production
 
@@ -111,7 +113,7 @@ Browser ── HTTPS ──> Caddy ──> go-notes (axum, :8080) ──> Postgr
                        │            │
                        │            ├──> /data/notes/<user>/**.md   (source of truth)
                        └─ Authelia  │
-                          (OIDC)    └──> embeddings (BGE-base-en-v1.5, optional)
+                          (OIDC)    └──> embeddings (BGE-small-en-v1.5, optional)
 ```
 
 One binary serves the API and the WebAssembly frontend. The server is axum and
@@ -150,8 +152,12 @@ shell history and in `ps`. Use the prompt or `--password-env VARNAME`.
 
 **Tuning suggested links.** `embeddings.min_score` decides how alike two
 passages must be, and the right value depends on your notes. BGE's scores sit in
-a narrow high band — dissimilar text still scores above 0.5 — so the shipped
-`0.82` is a starting point rather than a measured answer. Look at what you got,
+a narrow high band — measured against passages embedded exactly as
+`embed_missing` sends them (heading and body together), unrelated topics still
+scored up to 0.61 and genuine matches started at 0.74 — so the shipped `0.70` is
+a measured starting point for the default BGE-small-en-v1.5, not a guess, but it
+is still a starting point: a different model, or a vault of much shorter or
+longer notes than this was measured on, shifts the band. Look at what you got,
 adjust, and re-run `go-notes embed`; vectors are cached by content, so
 recomputing after a change costs nothing at the model.
 

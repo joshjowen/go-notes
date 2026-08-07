@@ -286,7 +286,43 @@ async fn relink_user(
                 edges.push((*note_id, found));
             }
         }
-        edges
+
+        // Every note's neighbours are found independently, so a mutual match
+        // between A and B is discovered twice — once from each side — and
+        // without this, both directed rows would be inserted under the primary
+        // key `(source_note_id, target_note_id)`, which does not consider them
+        // duplicates. `suggested_for` unions "I'm the source" with "I'm the
+        // target" on the assumption that a pair is one row; two rows made every
+        // suggestion appear twice. Canonicalising on note id, rather than
+        // keeping whichever direction happened to be found first, keeps the
+        // stored row the same across rebuilds regardless of `by_note`'s
+        // (randomised) hash iteration order.
+        let mut canonical: std::collections::HashMap<(Uuid, Uuid), (Uuid, similarity::Neighbour)> =
+            std::collections::HashMap::new();
+        for (source, edge) in edges {
+            let (source, edge) = if source <= edge.target_note_id {
+                (source, edge)
+            } else {
+                (
+                    edge.target_note_id,
+                    similarity::Neighbour {
+                        target_note_id: source,
+                        score: edge.score,
+                        source_ordinal: edge.target_ordinal,
+                        target_ordinal: edge.source_ordinal,
+                    },
+                )
+            };
+            let key = (source, edge.target_note_id);
+            let keep = match canonical.get(&key) {
+                Some((_, existing)) => edge.score > existing.score,
+                None => true,
+            };
+            if keep {
+                canonical.insert(key, (source, edge));
+            }
+        }
+        canonical.into_values().collect::<Vec<_>>()
     })
     .await
     .context("scoring passages")?;
