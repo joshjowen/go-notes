@@ -77,7 +77,10 @@ pub fn build(state: AppState) -> Router {
             state.clone(),
             web::origin_guard,
         ))
-        .layer(axum::middleware::from_fn(web::security_headers))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            web::security_headers,
+        ))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

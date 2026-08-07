@@ -272,6 +272,20 @@ impl Config {
             if self.auth.oidc.client_secret.is_empty() {
                 bail!("auth.oidc.enabled is set but auth.oidc.client_secret is empty");
             }
+            // The "is it empty?" check above is not enough on its own. The
+            // shipped example config and compose file carry a `CHANGE_ME`
+            // client secret whose Authelia-side digest is published in this
+            // repository, so a deployer who copies the example and fills in
+            // everything *except* this passes validation with a client secret
+            // the whole internet knows — which for an OIDC confidential client
+            // is as good as no authentication at all. Refuse to start on a
+            // recognisably unedited placeholder rather than run wide open.
+            if looks_like_placeholder(&self.auth.oidc.client_secret) {
+                bail!(
+                    "auth.oidc.client_secret is still an example placeholder; generate a real \
+                     secret (see deploy/authelia/configuration.yml) before exposing this server"
+                );
+            }
             if self.server.public_url.starts_with("http://localhost")
                 || self.server.public_url.starts_with("http://127.")
             {
@@ -432,6 +446,18 @@ fn is_private_address(host: &str) -> bool {
     }
 }
 
+/// Whether a value is a recognisably unedited example rather than a real secret.
+///
+/// Deliberately conservative: it matches only the exact markers this project
+/// ships in its own example files, so a legitimately random secret can never
+/// trip it by chance. The comparison is case-insensitive because the markers
+/// appear in both upper and mixed case across the configs.
+fn looks_like_placeholder(value: &str) -> bool {
+    const MARKERS: [&str; 4] = ["CHANGE_ME", "CHANGEME", "REPLACE_THIS", "REPLACE_ME"];
+    let normalised = value.to_ascii_uppercase();
+    MARKERS.iter().any(|marker| normalised.contains(marker))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,6 +598,44 @@ mod tests {
 
         config.auth.oidc.client_secret = "secret".into();
         config.validate().unwrap();
+    }
+
+    /// The exact failure this guards against: someone copies the example, sets
+    /// the issuer and enables OIDC, but never replaces the placeholder secret
+    /// that this repository publishes the digest for.
+    #[test]
+    fn rejects_a_placeholder_oidc_client_secret() {
+        let mut config = Config::default();
+        config.auth.oidc.enabled = true;
+        config.auth.oidc.issuer_url = "https://auth.example.com".into();
+
+        for placeholder in ["CHANGE_ME", "change_me", "REPLACE_THIS_secret", "changeme123"] {
+            config.auth.oidc.client_secret = placeholder.into();
+            assert!(
+                config.validate().is_err(),
+                "{placeholder:?} should be refused as an unedited placeholder"
+            );
+        }
+
+        // A real, high-entropy secret that merely happens to contain none of the
+        // markers must pass.
+        config.auth.oidc.client_secret = "s3cr3t-9f2a1c8b4d6e".into();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn placeholder_detection_does_not_fire_on_ordinary_secrets() {
+        assert!(looks_like_placeholder("CHANGE_ME_session_secret"));
+        assert!(looks_like_placeholder("replace_me"));
+        // A random secret must not match. The check is a deliberately broad
+        // substring scan — a secret that happened to embed "change_me" would be
+        // rejected too — but that is a safe direction to err in (regenerate the
+        // secret) and vanishingly unlikely for 256 bits of hex or base64.
+        assert!(!looks_like_placeholder("secret"));
+        assert!(!looks_like_placeholder("aZ09-random-bytes"));
+        assert!(!looks_like_placeholder(
+            "9f2a1c8b4d6e0f3a7b5c2d8e1f4a6b9c"
+        ));
     }
 
     #[test]

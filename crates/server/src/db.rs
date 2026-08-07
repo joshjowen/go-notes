@@ -147,6 +147,26 @@ pub async fn find_user_by_subject(
     row.as_ref().map(User::from_row).transpose()
 }
 
+/// Finds a user by the name they sign in with.
+///
+/// `username` is `citext`, so the match is case-insensitive — the same way
+/// sign-in is — which is what makes `go-notes logout Josh` reach the account
+/// that signed in as `josh`. Unlike `find_user_by_subject` this does not need
+/// the provider, so it reaches OIDC accounts as well as local ones: the whole
+/// point of the revoke command is that `user remove` only touches the local
+/// file and cannot end an Authelia user's sessions.
+pub async fn find_user_by_username(pool: &PgPool, username: &str) -> sqlx::Result<Option<User>> {
+    let row = sqlx::query(
+        "SELECT id, username::text AS username, display_name, email,
+                auth_provider, auth_subject, vault_dir
+         FROM users WHERE username = $1",
+    )
+    .bind(username)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(User::from_row).transpose()
+}
+
 pub async fn list_users(pool: &PgPool) -> sqlx::Result<Vec<User>> {
     let rows = sqlx::query(
         "SELECT id, username::text AS username, display_name, email,

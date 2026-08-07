@@ -21,9 +21,12 @@
 # Applied to both sites below.
 (security_headers) {
 	header {
-		# HSTS. Leave this commented until you are certain TLS works, because
-		# browsers cache it and it is awkward to undo.
-		# Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# HSTS is now emitted by go-notes itself whenever auth.cookie_secure is
+		# on (it is, in the shipped config), so the notes site is covered without
+		# anything here. Authelia sets its own. Uncomment this only if you want
+		# to add `preload` — an irreversible step — or a longer max-age, and only
+		# once you are certain TLS works, because browsers cache it hard.
+		# Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "same-origin"
@@ -36,10 +39,26 @@
 notes.example.com {
 	import security_headers
 
+	# Break-glass password login, if you turned it on (LOCAL_AUTH_ENABLED=true).
+	# Unlike the OIDC flow, POST /api/auth/login is a native go-notes endpoint
+	# that Authelia never sees, so nothing here gets its brute-force ban or its
+	# second factor. If you rely on a local account, confine that one endpoint to
+	# the networks you trust and let everyone else reach only the OIDC path.
+	# Adjust the ranges to your LAN/VPN, then uncomment.
+	#
+	# @locallogin {
+	# 	path /api/auth/login
+	# 	not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10
+	# }
+	# respond @locallogin 403
+
 	# go-notes sets its own Content-Security-Policy, including a hash of the
 	# WebAssembly loader. Do not override it here or the frontend will not run.
 	reverse_proxy go-notes:8080 {
 		header_up X-Forwarded-Proto {scheme}
+		# Overwrite rather than append, so a client-supplied X-Forwarded-For can
+		# never reach go-notes' login throttle. {remote_host} is the peer Caddy
+		# actually sees.
 		header_up X-Forwarded-For {remote_host}
 	}
 
