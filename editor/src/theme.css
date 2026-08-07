@@ -7,10 +7,18 @@
  * the light/dark theme without knowing anything about it.
  */
 
+/* The horizontal padding that centers the reading column lives here rather
+   than on `.gn-editor-host` (the parent both of these fill). These two are the
+   elements that actually scroll — padding on a scrolling element insets its
+   content while leaving the scrollbar at the element's own edge, so putting it
+   here keeps the scrollbar flush with the true edge of the pane on a wide
+   window. Padding on the non-scrolling host pushed both the content *and* the
+   scrollbar inward together. */
 .gn-editor-wysiwyg,
 .gn-editor-source {
   height: 100%;
   overflow-y: auto;
+  padding: 0 max(24px, calc((100% - 780px) / 2));
 }
 
 /* ---------------------------------------------------------------- tokens */

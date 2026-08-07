@@ -532,7 +532,6 @@ kbd {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  padding: 0 max(24px, calc((100% - 780px) / 2));
 }
 
 .gn-editor-host.gn-dragging-file {
@@ -600,6 +599,17 @@ kbd {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+}
+
+/* A suggestion is the model's guess, not a link the author wrote — the dashed
+   border echoes the dashed edge the same connection gets in the graph. */
+.gn-suggested-link {
+  background: transparent;
+  border: 1px dashed var(--gn-border);
+}
+
+.gn-suggested-link:hover {
+  background: var(--gn-bg-tertiary);
 }
 
 .gn-outline-item {
@@ -1278,10 +1288,15 @@ kbd {
   }
 }
 
+/* `position: fixed` rather than `absolute`: `.gn-sync` sits inside
+   `.gn-topbar`, which clips its own contents (`overflow: hidden`) to stop a
+   crowded toolbar from forcing the page to scroll sideways. An absolutely
+   positioned child is clipped by that just like anything else, so the panel
+   never painted below the topbar's own height. `top`/`right` are set inline
+   from the chip's bounding rect instead of computed from a positioned
+   ancestor. */
 .gn-sync-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
+  position: fixed;
   z-index: 1200;
   width: min(380px, 84vw);
   max-height: 60vh;

@@ -30,12 +30,12 @@ services:
     # under both.
     container_name: go-notes
     ports:
-      - "8080:8080"
+      - "8086:8080"
     environment:
       # Must match the address you actually type in the browser, because writes
       # are refused if the Origin header disagrees with it. If you reach this at
-      # http://127.0.0.1:8080 rather than localhost, change it here to match.
-      GO_NOTES__SERVER__PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # http://127.0.0.1:8086 rather than localhost, change it here to match.
+      GO_NOTES__SERVER__PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8086}
 
       # No TLS on a laptop, so the Secure flag has to come off — a browser will
       # not send a Secure cookie over plain HTTP, and the app would appear to
@@ -67,7 +67,7 @@ services:
       # How alike two passages must be before the graph suggests a connection.
       # Worth tuning to your own notes — see the README; BGE's scores sit high,
       # so too low a value connects everything to everything.
-      GO_NOTES__EMBEDDINGS__MIN_SCORE: ${EMBEDDINGS_MIN_SCORE:-0.82}
+      GO_NOTES__EMBEDDINGS__MIN_SCORE: ${EMBEDDINGS_MIN_SCORE:-0.60}
 
       RUST_LOG: ${RUST_LOG:-info}
     volumes:

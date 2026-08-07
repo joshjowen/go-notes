@@ -9,8 +9,8 @@ use gloo_net::http::{Request, Response};
 use go_notes_shared::{
     ApiError, AttachmentResponse, AuthInfo, ConflictBody, CreateFolderRequest, CreateNoteRequest,
     FolderStateRequest, GraphResponse, LoginRequest, Me, MoveRequest, MoveResponse, NoteResponse,
-    QuickSwitchItem, SaveNoteRequest, SaveNoteResponse, SearchResponse, TagCount, TreeNode,
-    IF_MATCH_HEADER,
+    QuickSwitchItem, SaveNoteRequest, SaveNoteResponse, SearchResponse, TagCount, ThemePreference,
+    TreeNode, IF_MATCH_HEADER,
 };
 use serde::de::DeserializeOwned;
 
@@ -191,6 +191,25 @@ pub async fn logout() -> ApiResult<LogoutResponse> {
         .await
         .map_err(network_error)?;
     decode(response).await
+}
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+pub async fn get_theme() -> ApiResult<ThemePreference> {
+    let response = Request::get("/api/theme").send().await.map_err(network_error)?;
+    decode(response).await
+}
+
+pub async fn set_theme(preference: &ThemePreference) -> ApiResult<()> {
+    let response = Request::put("/api/theme")
+        .json(preference)
+        .map_err(encode_error)?
+        .send()
+        .await
+        .map_err(network_error)?;
+    expect_success(response).await
 }
 
 // ---------------------------------------------------------------------------

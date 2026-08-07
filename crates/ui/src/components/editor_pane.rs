@@ -102,6 +102,7 @@ pub fn EditorPane() -> impl IntoView {
                 save::opened(state, &path, note.meta.content_hash.clone(), note.markdown.clone());
                 state.mark_dirty(&path, false);
                 state.backlinks.set(note.backlinks.clone());
+                state.suggested_links.set(note.suggested.clone());
                 state.active_markdown.set(note.markdown.clone());
 
                 // The id is copied out and the borrow released before awaiting,

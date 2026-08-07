@@ -118,6 +118,9 @@ fn local_note(cached: CachedNote, all: Vec<CachedNote>) -> NoteResponse {
         // Outgoing links are only used by the server's own graph building; the
         // interface reads backlinks. Left empty rather than half-computed.
         outgoing: Vec::new(),
+        // No local equivalent of the embeddings model, so nothing to suggest
+        // from a cached copy.
+        suggested: Vec::new(),
         markdown: cached.markdown,
     }
 }
