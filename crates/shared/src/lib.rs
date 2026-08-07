@@ -106,13 +106,30 @@ pub struct NoteMeta {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NoteResponse {
     pub meta: NoteMeta,
     /// The full file contents, frontmatter included, exactly as stored.
     pub markdown: String,
     pub backlinks: Vec<Backlink>,
     pub outgoing: Vec<OutgoingLink>,
+    /// Notes the embeddings model thinks are about the same thing as this one,
+    /// without either note linking to the other. Empty when the feature is off,
+    /// nothing has scored above the threshold yet, or (offline) always — there is
+    /// no local equivalent of the model to fall back to.
+    pub suggested: Vec<SuggestedLink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SuggestedLink {
+    pub path: String,
+    pub title: String,
+    /// Cosine similarity of the best-matching pair of passages, in 0..1.
+    pub score: f32,
+    /// Heading path in *this* note the matching passage sat under, empty if none.
+    pub source_heading: String,
+    /// Heading path in `path` the matching passage sat under, empty if none.
+    pub target_heading: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -174,6 +191,24 @@ pub struct CreateFolderRequest {
 pub struct FolderStateRequest {
     pub path: String,
     pub collapsed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+/// A user's theme choice and any customisation of it. Opaque to the server —
+/// `theme_id` and `custom_css` are stored and returned exactly as sent, and
+/// `custom_colors` is whatever JSON the frontend's own `ThemeColors` type
+/// serialises to. Keeping that type out of this crate avoids the UI crate's
+/// theme module needing to live somewhere `wasm32`-free code can depend on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ThemePreference {
+    pub theme_id: String,
+    /// Only meaningful when `theme_id` is `"custom"`; `None` for a built-in
+    /// theme rather than duplicating its fixed palette into every save.
+    pub custom_colors: Option<String>,
+    pub custom_css: String,
 }
 
 // ---------------------------------------------------------------------------

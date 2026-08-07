@@ -143,7 +143,7 @@ pub fn GraphView() -> impl IntoView {
     let depth = RwSignal::new(1u32);
     // Off by default. Suggestions are the model's opinion, and a graph that
     // opens full of them buries the connections the author actually made.
-    let show_semantic = RwSignal::new(false);
+    let show_semantic = RwSignal::new(true);
     let loading = RwSignal::new(true);
     let node_count = RwSignal::new(0usize);
 

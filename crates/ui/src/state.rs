@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use go_notes_shared::{Backlink, Me, TreeNode};
+use go_notes_shared::{Backlink, Me, SuggestedLink, TreeNode};
 use leptos::prelude::*;
 
 use crate::editor::EditorMode;
@@ -101,6 +101,7 @@ pub struct AppState {
     pub tabs: RwSignal<Vec<Tab>>,
     pub active: RwSignal<Option<usize>>,
     pub backlinks: RwSignal<Vec<Backlink>>,
+    pub suggested_links: RwSignal<Vec<SuggestedLink>>,
     /// The markdown the editor currently holds. Kept here so the outline pane
     /// can be derived from it without reaching into the editor.
     pub active_markdown: RwSignal<String>,
@@ -162,6 +163,7 @@ impl AppState {
             tabs: RwSignal::new(Vec::new()),
             active: RwSignal::new(None),
             backlinks: RwSignal::new(Vec::new()),
+            suggested_links: RwSignal::new(Vec::new()),
             active_markdown: RwSignal::new(String::new()),
             left_panel: RwSignal::new(LeftPanel::Files),
             // Backlinks are a side panel on a desktop and a whole screen on a

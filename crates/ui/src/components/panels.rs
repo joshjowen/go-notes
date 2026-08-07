@@ -338,6 +338,59 @@ pub fn BacklinksPane() -> impl IntoView {
                         .into_any()
                 }}
             </div>
+
+            <Show when=move || state.me.get().is_some_and(|me| me.semantic_links)>
+                <div class="gn-panel-section">
+                    <p class="gn-panel-title">"Suggested links"</p>
+                    {move || {
+                        let links = state.suggested_links.get();
+                        if links.is_empty() {
+                            return view! {
+                                <p class="gn-empty">
+                                    "Nothing else in the vault reads like this note yet."
+                                </p>
+                            }
+                                .into_any();
+                        }
+
+                        links
+                            .into_iter()
+                            .map(|link| {
+                                let path = link.path.clone();
+                                let title = link.title.clone();
+                                let percent = (link.score.clamp(0.0, 1.0) * 100.0).round() as i32;
+                                let heading = if link.target_heading.is_empty() {
+                                    link.title.clone()
+                                } else {
+                                    format!("{} \u{2013} {}", link.title, link.target_heading)
+                                };
+                                view! {
+                                    <button
+                                        class="gn-backlink gn-suggested-link"
+                                        title=format!("{percent}% similar")
+                                        on:click=move |_| {
+                                            state.open_tab(path.clone(), title.clone());
+                                        }
+                                    >
+                                        <span class="gn-backlink-title">{heading}</span>
+                                        <span class="gn-backlink-context">
+                                            {if link.source_heading.is_empty() {
+                                                "This note".to_string()
+                                            } else {
+                                                format!("Under \u{201c}{}\u{201d}", link.source_heading)
+                                            }}
+                                            " reads like this \u{2014} "
+                                            {percent}
+                                            "% similar."
+                                        </span>
+                                    </button>
+                                }
+                            })
+                            .collect_view()
+                            .into_any()
+                    }}
+                </div>
+            </Show>
         </div>
     }
 }

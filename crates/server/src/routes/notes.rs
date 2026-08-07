@@ -6,7 +6,7 @@ use axum::response::Response;
 use axum::Json;
 use go_notes_shared::{
     Backlink, CreateNoteRequest, MoveRequest, MoveResponse, NoteMeta, NoteResponse, OutgoingLink,
-    SaveNoteRequest, SaveNoteResponse,
+    SaveNoteRequest, SaveNoteResponse, SuggestedLink,
 };
 use sqlx::Row;
 use uuid::Uuid;
@@ -39,6 +39,7 @@ pub async fn read(
         markdown: file.markdown,
         backlinks: backlinks_for(&state, note_id).await?,
         outgoing: outgoing_for(&state, note_id).await?,
+        suggested: suggested_for(&state, note_id).await?,
     }))
 }
 
@@ -250,6 +251,58 @@ async fn outgoing_for(state: &AppState, note_id: Uuid) -> AppResult<Vec<Outgoing
             Ok(OutgoingLink {
                 target_raw: row.try_get("target_raw")?,
                 resolved_path: row.try_get("rel_path")?,
+            })
+        })
+        .collect()
+}
+
+/// Notes the model thinks are about the same thing as this one, without either
+/// linking to the other. `semantic_links` stores one row per unordered pair, so
+/// this note can sit on either side of it; both directions are queried and
+/// merged by score. `note_chunks` is joined back in on each side's own ordinal
+/// purely to label *which* heading matched — the graph draws the same edge with
+/// no label at all.
+pub async fn suggested_for(state: &AppState, note_id: Uuid) -> AppResult<Vec<SuggestedLink>> {
+    let rows = sqlx::query(
+        "SELECT n.rel_path AS path, n.title, s.score,
+                COALESCE(c_mine.heading, '') AS source_heading,
+                COALESCE(c_theirs.heading, '') AS target_heading
+         FROM semantic_links s
+         JOIN notes n ON n.id = s.target_note_id
+         LEFT JOIN note_chunks c_mine
+           ON c_mine.note_id = s.source_note_id AND c_mine.ordinal = s.source_ordinal
+         LEFT JOIN note_chunks c_theirs
+           ON c_theirs.note_id = s.target_note_id AND c_theirs.ordinal = s.target_ordinal
+         WHERE s.source_note_id = $1
+
+         UNION ALL
+
+         SELECT n.rel_path AS path, n.title, s.score,
+                COALESCE(c_mine.heading, '') AS source_heading,
+                COALESCE(c_theirs.heading, '') AS target_heading
+         FROM semantic_links s
+         JOIN notes n ON n.id = s.source_note_id
+         LEFT JOIN note_chunks c_mine
+           ON c_mine.note_id = s.target_note_id AND c_mine.ordinal = s.target_ordinal
+         LEFT JOIN note_chunks c_theirs
+           ON c_theirs.note_id = s.source_note_id AND c_theirs.ordinal = s.source_ordinal
+         WHERE s.target_note_id = $1
+
+         ORDER BY score DESC
+         LIMIT 20",
+    )
+    .bind(note_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(SuggestedLink {
+                path: row.try_get("path")?,
+                title: row.try_get("title")?,
+                score: row.try_get("score")?,
+                source_heading: row.try_get("source_heading")?,
+                target_heading: row.try_get("target_heading")?,
             })
         })
         .collect()

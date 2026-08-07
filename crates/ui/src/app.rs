@@ -1,6 +1,8 @@
 //! The root component: the login gate, the three-pane shell, and the global
 //! keyboard shortcuts.
 
+use std::rc::Rc;
+
 use gloo_timers::callback::Timeout;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -54,6 +56,59 @@ pub fn App() -> impl IntoView {
         theme::save_custom_css(&css);
     });
 
+    // Pushes the theme to the server so it follows the person to their next
+    // device, not just their next visit to this browser. `localStorage` above
+    // stays the instant, offline-proof copy — this is a best-effort mirror on
+    // top of it, the same relationship `offline::cache` has to the vault.
+    //
+    // `last_synced` guards against sending the server's own answer straight
+    // back to it: whatever `GET /api/theme` returns is recorded here before
+    // being applied to the signals below, so the save effect this triggers
+    // sees nothing has actually changed and skips the round trip. A plain
+    // "skip the next run" flag would miss this when the fetched value happens
+    // to equal what `localStorage` already had loaded — a common case on a
+    // second visit from the same browser — since then no signal changes and
+    // the effect never runs again to consume the flag, silently swallowing
+    // whatever the person edits next.
+    let last_synced: Rc<std::cell::RefCell<Option<go_notes_shared::ThemePreference>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let theme_save_timer: Rc<std::cell::RefCell<Option<Timeout>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    Effect::new({
+        let last_synced = last_synced.clone();
+        let theme_save_timer = theme_save_timer.clone();
+        move |_| {
+            let id = state.theme_id.get();
+            let colors = state.custom_colors.get();
+            let css = state.custom_css.get();
+
+            // Nothing to save against yet — the login screen also runs this
+            // effect, since it shares `AppState` with the signed-in shell.
+            if state.me.get_untracked().is_none() {
+                return;
+            }
+
+            let preference = go_notes_shared::ThemePreference {
+                theme_id: id.as_str().to_string(),
+                custom_colors: (id == theme::ThemeId::Custom)
+                    .then(|| serde_json::to_string(&colors).ok())
+                    .flatten(),
+                custom_css: css,
+            };
+            if last_synced.borrow().as_ref() == Some(&preference) {
+                return;
+            }
+            *last_synced.borrow_mut() = Some(preference.clone());
+
+            let scheduled = Timeout::new(800, move || {
+                spawn_local(async move {
+                    let _ = api::set_theme(&preference).await;
+                });
+            });
+            *theme_save_timer.borrow_mut() = Some(scheduled);
+        }
+    });
+
     // Find out who we are. A 401 here is the normal unauthenticated case, not an
     // error worth showing.
     //
@@ -63,31 +118,55 @@ pub fn App() -> impl IntoView {
     // application opens on their notes instead of on a login screen it cannot
     // service anyway.
     let checked = RwSignal::new(false);
-    Effect::new(move |_| {
-        spawn_local(async move {
-            offline::init(state).await;
-            pwa::watch(state);
+    Effect::new({
+        let last_synced = last_synced.clone();
+        move |_| {
+            let last_synced = last_synced.clone();
+            spawn_local(async move {
+                offline::init(state).await;
+                pwa::watch(state);
 
-            match api::me().await {
-                Ok(me) => {
-                    state.online.set(true);
-                    offline::cache::remember_identity(&me).await;
-                    state.me.set(Some(me));
-                    // Anything queued from a previous session goes now.
-                    sync::start(state);
+                match api::me().await {
+                    Ok(me) => {
+                        state.online.set(true);
+                        offline::cache::remember_identity(&me).await;
+                        state.me.set(Some(me));
+                        // Anything queued from a previous session goes now.
+                        sync::start(state);
+
+                        // The server's copy wins over whatever localStorage
+                        // held, the same as any other device this account has
+                        // been used from. A brand-new account has no row yet,
+                        // in which case the default `ThemePreference` comes
+                        // back and there is nothing worth overwriting with.
+                        if let Ok(preference) = api::get_theme().await {
+                            if let Some(id) = theme::ThemeId::from_str(&preference.theme_id) {
+                                let colors = preference
+                                    .custom_colors
+                                    .as_deref()
+                                    .and_then(|json| serde_json::from_str(json).ok());
+                                *last_synced.borrow_mut() = Some(preference.clone());
+                                if let Some(colors) = colors {
+                                    state.custom_colors.set(colors);
+                                }
+                                state.custom_css.set(preference.custom_css);
+                                state.theme_id.set(id);
+                            }
+                        }
+                    }
+                    Err(ApiFailure::Unauthenticated) => {
+                        state.online.set(true);
+                        state.me.set(None);
+                    }
+                    Err(err) if err.is_offline() => {
+                        offline::net::report_unreachable(state);
+                        state.me.set(offline::cache::identity().await);
+                    }
+                    Err(err) => state.error(err.user_message()),
                 }
-                Err(ApiFailure::Unauthenticated) => {
-                    state.online.set(true);
-                    state.me.set(None);
-                }
-                Err(err) if err.is_offline() => {
-                    offline::net::report_unreachable(state);
-                    state.me.set(offline::cache::identity().await);
-                }
-                Err(err) => state.error(err.user_message()),
-            }
-            checked.set(true);
-        });
+                checked.set(true);
+            });
+        }
     });
 
     view! {

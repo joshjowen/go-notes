@@ -11,6 +11,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::components::tree::create_note_in;
@@ -182,6 +183,14 @@ pub fn TopBar() -> impl IntoView {
 fn SyncStatus() -> impl IntoView {
     let state = use_app();
     let open = RwSignal::new(false);
+    // Fixed rather than positioned relative to `.gn-sync`, so the panel is not
+    // clipped by `.gn-topbar`'s `overflow: hidden` — that rule exists to stop a
+    // crowded toolbar forcing a horizontal scrollbar, and it clips any
+    // descendant that tries to paint outside the topbar's own box, dropdown or
+    // not. `(top, right)` in viewport pixels, taken from the chip itself rather
+    // than the click point so the panel lands in the same place however it was
+    // opened (mouse, keyboard, touch).
+    let panel_pos = RwSignal::new((0.0_f64, 0.0_f64));
 
     let label = move || crate::offline::net::summary(&state);
     let attention = move || state.sync.get() == SyncPhase::Blocked || state.local_only();
@@ -194,14 +203,33 @@ fn SyncStatus() -> impl IntoView {
                 class:gn-sync-attention=attention
                 class:gn-sync-busy=move || state.sync.get() == SyncPhase::Syncing
                 title="Connection and sync status"
-                on:click=move |_| open.update(|shown| *shown = !*shown)
+                on:click=move |ev| {
+                    if let Some(target) = ev.current_target() {
+                        if let Ok(el) = target.dyn_into::<web_sys::HtmlElement>() {
+                            let rect = el.get_bounding_client_rect();
+                            let viewport_width = web_sys::window()
+                                .and_then(|w| w.inner_width().ok())
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(rect.right());
+                            panel_pos.set((rect.bottom() + 8.0, viewport_width - rect.right()));
+                        }
+                    }
+                    open.update(|shown| *shown = !*shown);
+                }
             >
                 <span class="gn-sync-dot"></span>
                 <span class="gn-sync-label">{label}</span>
             </button>
 
             <Show when=move || open.get()>
-                <div class="gn-sync-panel" on:click=move |ev| ev.stop_propagation()>
+                <div
+                    class="gn-sync-panel"
+                    style=move || {
+                        let (top, right) = panel_pos.get();
+                        format!("top: {top}px; right: {right}px;")
+                    }
+                    on:click=move |ev| ev.stop_propagation()
+                >
                     <p class="gn-panel-title">
                         {move || {
                             if state.local_only() {

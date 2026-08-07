@@ -5,6 +5,7 @@ pub mod files;
 pub mod graph;
 pub mod notes;
 pub mod search;
+pub mod theme;
 pub mod tree;
 
 use axum::routing::{delete, get, post, put};
@@ -33,6 +34,9 @@ pub fn build(state: AppState) -> Router {
         .route("/auth/oidc/login", get(auth::oidc_login))
         .route("/auth/oidc/callback", get(auth::oidc_callback))
         .route("/me", get(auth::me))
+        // --- theme ---------------------------------------------------------
+        .route("/theme", get(theme::get_theme))
+        .route("/theme", put(theme::set_theme))
         // --- tree and folders -------------------------------------------
         .route("/tree", get(tree::tree))
         .route("/folders", post(tree::create_folder))
